@@ -36,3 +36,5 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/cairn-worker-container:latest
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/cairn-worker-container:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/cairn-worker-container:buildcache,mode=max
