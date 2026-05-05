@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 TaskType = Literal["reason", "explore", "bootstrap"]
-WorkerType = Literal["claudecode", "codex", "mock"]
+WorkerType = Literal["claudecode", "codex", "pi", "mock"]
 CompletedAction = Literal["remove", "stop"]
 
 WORKER_ENV_KEYS: dict[WorkerType, tuple[str, ...]] = {
@@ -24,6 +24,12 @@ WORKER_ENV_KEYS: dict[WorkerType, tuple[str, ...]] = {
         "CODEX_MODEL",
         "CODEX_BASE_URL",
         "OPENAI_API_KEY",
+    ),
+    "pi": (
+        "PI_MODEL",
+        "PI_BASE_URL",
+        "PI_API_KEY",
+        "PI_PROVIDER_API",
     ),
     "mock": (),
 }
@@ -182,6 +188,8 @@ class WorkerConfig(BaseModel):
         missing = [key for key in required if not self.env.get(key)]
         if missing:
             raise ValueError(f"worker {self.name} missing env keys: {', '.join(missing)}")
+        if self.type == "pi":
+            _validate_optional_positive_int_env(self.name, self.env, "PI_MODEL_CONTEXT_WINDOW")
         if self.type == "mock":
             resolve_mock_behavior(self.name, self.env)
         return self
@@ -244,6 +252,18 @@ class DispatchConfig(BaseModel):
         config = cls.model_validate(data)
         validate_prompt_resources(config.runtime.prompt_group)
         return config
+
+
+def _validate_optional_positive_int_env(worker_name: str, env: dict[str, str], key: str) -> None:
+    value = env.get(key)
+    if value is None or not value.strip():
+        return
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"worker {worker_name} env {key} must be an integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"worker {worker_name} env {key} must be greater than 0")
 
 
 def validate_prompt_resources(prompt_group: str) -> None:

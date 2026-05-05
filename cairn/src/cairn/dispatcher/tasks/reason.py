@@ -132,6 +132,7 @@ def run_reason_task(
         )
         execute_ms = int((time.perf_counter() - execute_started) * 1000)
         total_ms = int((time.perf_counter() - task_started) * 1000)
+        session = driver.extract_session(session, result.stdout, result.stderr)
         cancelled = cancel_reason(result, cancellation)
         if cancelled is not None:
             LOG.info(
@@ -175,7 +176,8 @@ def run_reason_task(
             )
             return "failed"
         try:
-            payload = parse_json_output(result.stdout)
+            model_output = driver.extract_response_text(result.stdout, result.stderr)
+            payload = parse_json_output(model_output)
             kind, data = validate_reason_payload(
                 payload, open_intents_empty=not open_intents, max_intents=config.tasks.reason.max_intents,
             )

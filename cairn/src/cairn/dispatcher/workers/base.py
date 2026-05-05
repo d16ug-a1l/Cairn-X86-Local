@@ -42,8 +42,11 @@ class WorkerDriver(abc.ABC):
     def build_conclude(self, worker: WorkerConfig, prompt: str, session: str) -> list[str]:
         raise NotImplementedError
 
-    def extract_session(self, session: str | None, stderr: str) -> str | None:
+    def extract_session(self, session: str | None, stdout: str, stderr: str) -> str | None:
         return session
+
+    def extract_response_text(self, stdout: str, stderr: str) -> str:
+        return stdout
 
 
 class SeedSessionDriver(WorkerDriver):
@@ -54,7 +57,7 @@ class SeedSessionDriver(WorkerDriver):
 class RegexSessionDriver(WorkerDriver):
     session_pattern = re.compile(r"session id:\s*([0-9a-fA-F-]+)")
 
-    def extract_session(self, session: str | None, stderr: str) -> str | None:
+    def extract_session(self, session: str | None, stdout: str, stderr: str) -> str | None:
         if session:
             return session
         match = self.session_pattern.search(stderr)

@@ -117,7 +117,7 @@ def run_bootstrap_task(
             cancellation=cancellation,
         )
         execute_ms = int((time.perf_counter() - execute_started) * 1000)
-        session = driver.extract_session(session, first.stderr)
+        session = driver.extract_session(session, first.stdout, first.stderr)
         cancelled = cancel_reason(first, cancellation)
         if cancelled is not None:
             LOG.info(
@@ -143,7 +143,8 @@ def run_bootstrap_task(
             return "failed"
         if not did_timeout(first) and first.returncode == 0:
             try:
-                payload = parse_json_output(first.stdout)
+                model_output = driver.extract_response_text(first.stdout, first.stderr)
+                payload = parse_json_output(model_output)
                 kind, data = validate_bootstrap_execute_payload(payload)
             except Exception as exc:
                 LOG.warning(
@@ -341,7 +342,8 @@ def _try_conclude_fallback(
         best_effort_release(client, project.project.id, intent.id, worker.name)
         return "failed"
     try:
-        payload = parse_json_output(result.stdout)
+        model_output = driver.extract_response_text(result.stdout, result.stderr)
+        payload = parse_json_output(model_output)
         conclude_data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
         if isinstance(conclude_data, dict) and isinstance(conclude_data.get("complete"), dict):
             LOG.warning(
