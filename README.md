@@ -99,6 +99,8 @@ System architecture:
 
 **Cairn Dispatcher** reads the graph, schedules tasks, spins up and tears down worker containers, and is the sole writer to the protocol. Each project gets its own Worker Container; multiple Agent Workers run concurrently inside it. Agent Workers only receive a prompt and return structured output.
 
+Supported worker backends: **Claude Code**, **Codex**, and **Pi**.
+
 ## Results
 
 **Tencent Cloud Hackathon · AI Penetration Testing Challenge · 2nd Edition**
