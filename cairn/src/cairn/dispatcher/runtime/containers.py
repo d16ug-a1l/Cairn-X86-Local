@@ -105,55 +105,64 @@ class ContainerManager:
         state = container.attrs.get("State", {}).get("Status")
         return str(state) if state else None
 
-    def cleanup_completed(self, project_id: str) -> None:
+    def cleanup_completed(self, project_id: str) -> bool:
         name = self.container_name(project_id)
         state = self.inspect_state(name)
         if state is None:
-            return
+            return True
         container = self._require_container(name)
         if self._config.completed_action == "remove":
             LOG.info("removing completed project container project=%s container=%s", project_id, name)
             try:
                 container.remove(force=True)
             except NotFound:
-                return
+                return True
             except DockerException as exc:
                 LOG.warning("failed to remove container=%s error=%s", name, exc)
+                return False
+            return self.inspect_state(name) is None
         elif state == "running":
             LOG.info("stopping completed project container project=%s container=%s", project_id, name)
             try:
                 container.stop(timeout=1)
             except NotFound:
-                return
+                return True
             except DockerException as exc:
                 LOG.warning("failed to stop container=%s error=%s", name, exc)
+                return False
+            return self.inspect_state(name) != "running"
+        return True
 
-    def cleanup_stopped(self, project_id: str) -> None:
+    def cleanup_stopped(self, project_id: str) -> bool:
         name = self.container_name(project_id)
         state = self.inspect_state(name)
         if state != "running":
-            return
+            return True
         LOG.info("stopping stopped project container project=%s container=%s", project_id, name)
         container = self._require_container(name)
         try:
             container.stop(timeout=1)
         except NotFound:
-            return
+            return True
         except DockerException as exc:
             LOG.warning("failed to stop stopped project container=%s error=%s", name, exc)
+            return False
+        return self.inspect_state(name) != "running"
 
-    def cleanup_orphan(self, name: str) -> None:
+    def cleanup_orphan(self, name: str) -> bool:
         state = self.inspect_state(name)
         if state is None:
-            return
+            return True
         LOG.info("removing orphan project container container=%s state=%s", name, state)
         container = self._require_container(name)
         try:
             container.remove(force=True)
         except NotFound:
-            return
+            return True
         except DockerException as exc:
             LOG.warning("failed to remove orphan container=%s error=%s", name, exc)
+            return False
+        return self.inspect_state(name) is None
 
     def managed_container_names(self) -> list[str]:
         try:
