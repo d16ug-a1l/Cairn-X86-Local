@@ -52,6 +52,14 @@ RUN mkdir -p /home/kali/pocs && cd /home/kali/pocs && \
     git clone --depth=1 https://github.com/passwa11/2023Hvv_.git && \
     git clone --depth=1 https://github.com/Threekiii/Awesome-POC.git && \
     git clone --depth=1 https://github.com/vulhub/vulhub.git
+
+RUN cd /tmp && \
+    wget -q "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep_15.1.0-1_amd64.deb" -O ripgrep.deb && \
+    wget -q "https://github.com/sharkdp/fd/releases/download/v10.4.2/fd_10.4.2_amd64.deb" -O fd.deb && \
+    sudo apt install ./ripgrep.deb ./fd.deb && \
+    sudo rm -rf /tmp/* && \
+    sudo apt clean && \
+    sudo rm -rf /var/lib/apt/lists/*
     
 RUN sudo npm install -g @openai/codex@0.118.0
 RUN sudo npm install -g @anthropic-ai/claude-code@2.1.98
