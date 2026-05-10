@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 import logging
 import threading
@@ -99,6 +100,7 @@ class ManagedProcess:
 
     def _read_stream(self) -> None:
         assert self._exec_id is not None
+        stream: Any | None = None
         try:
             stream = self._api.exec_start(
                 self._exec_id,
@@ -116,8 +118,23 @@ class ManagedProcess:
         except DockerException as exc:
             self._read_error = str(exc)
         finally:
+            self._close_stream(stream)
             self._returncode = self._resolve_exit_code()
             self._done.set()
+
+    @staticmethod
+    def _close_stream(stream: Any | None) -> None:
+        if stream is None:
+            return
+        close = getattr(stream, "close", None)
+        if callable(close):
+            with suppress(Exception):
+                close()
+        response = getattr(stream, "_response", None)
+        response_close = getattr(response, "close", None)
+        if callable(response_close):
+            with suppress(Exception):
+                response_close()
 
     def _resolve_exit_code(self) -> int:
         assert self._exec_id is not None
