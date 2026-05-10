@@ -1403,15 +1403,35 @@ function cairnApp() {
 
     async copyYamlPreview() {
       if (!this.yamlPreviewText) return;
-      if (!navigator.clipboard?.writeText) {
-        this.showToast('Copy not supported', 'error');
-        return;
-      }
       try {
-        await navigator.clipboard.writeText(this.yamlPreviewText);
+        await this.copyText(this.yamlPreviewText);
         this.showToast('Copied');
       } catch {
         this.showToast('Copy failed', 'error');
+      }
+    },
+
+    async copyText(text) {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.top = '0';
+      textarea.style.left = '-9999px';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      try {
+        if (!document.execCommand('copy')) {
+          throw new Error('copy command rejected');
+        }
+      } finally {
+        document.body.removeChild(textarea);
       }
     },
 
