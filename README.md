@@ -6,8 +6,12 @@
 ### More Than Just AI Penetration Testing — Towards General State-Space Search
 
 <p>
-  <img src="./README/tencent.png" alt="Tencent" height="55" />
-  <img src="./README/tch.png" alt="TCH" height="55" />
+  <a href="https://zc.tencent.com/hackathon" target="_blank" rel="noopener noreferrer">
+    <img src="./README/tencent.png" alt="Tencent" height="55" />
+  </a>
+  <a href="https://zc.tencent.com/hackathon" target="_blank" rel="noopener noreferrer">
+    <img src="./README/tch.png" alt="TCH" height="55" />
+  </a>
 </p>
 
 Cairn is a general-purpose problem-solving engine. <br/>It defines no roles, no workflows. Given an origin and a goal, it searches for a path through an unknown state space. <br/>AI Penetration Testing is one such problem — and a proven one.
@@ -119,7 +123,6 @@ Supported worker backends: **Claude Code**, **Codex**, and **Pi**.
 - <a href="https://mp.weixin.qq.com/s/DlpEH7bVr0xi0VawPJs3XA" target="_blank" rel="noopener noreferrer">The Strongest AI Penetration Testing Agent: Postmortem of the Only Team to Achieve AK at the TCH Tencent Cloud Hackathon Intelligent Penetration Testing Challenge (2nd Edition)</a>
 - <a href="https://mp.weixin.qq.com/s/2rEqFLvkxvYWM3gW170C2w" target="_blank" rel="noopener noreferrer">The Pathless Path: Cairn AI from Penetration Testing to General Problem Solving</a>
 
-
 ## Getting Started
 
 **Prerequisites**
@@ -176,6 +179,11 @@ You are solely responsible for how you use this project. Do not use Cairn agains
 
 The developers and contributors of this project do not endorse or accept responsibility for any misuse, abuse, damage, loss, or legal consequences arising from its use. By using this project, you agree to ensure that your activities comply with all applicable laws, regulations, contractual obligations, and professional or organizational policies in your jurisdiction.
 
+## Star History
+
+<a href="https://www.star-history.com/#oritera/Cairn&Date" target="_blank" rel="noopener noreferrer">
+  <img src="https://api.star-history.com/svg?repos=oritera/Cairn&type=Date" alt="Star History Chart" />
+</a>
 
 ## ⚖️ License
 This project is licensed under **GNU AGPLv3** for personal and educational use.
