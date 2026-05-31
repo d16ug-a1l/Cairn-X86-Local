@@ -3,7 +3,7 @@ server: "http://cairn-server:8000"
 
 # Shared environment variables merged into every worker.
 common_env:
-  TSEC_SERVER_HOST: "10.0.0.44:8000"
+  TSEC_SERVER_HOST: "<SERVER_HOST>:8000"
   TSEC_AGENT_TOKEN: "xxx"
 
 runtime:

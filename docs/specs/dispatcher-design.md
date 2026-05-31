@@ -150,7 +150,7 @@ Worker 选择规则：
 5. 如果 `priority` 相同，则优先选择当前运行中任务数更少的
 6. 如果仍然相同，则随机选择
 7. 如果是 `explore`，Dispatcher 先通过 `POST /projects/{project_id}/intents/{intent_id}/heartbeat` claim 成功，再真正启动任务
-8. 如果是 `reason`，claim 成功后由 `POST /projects/{project_id}/reason/heartbeat` 维持 lease；真正启动前，再对选中的 Worker 执行一次健康检查；如果失败，则本次任务作废；该 Worker 会进入一个短暂不可选窗口，等待后续轮次再尝试
+8. 如果是 `reason`，claim 成功后由 `POST /projects/{project_id}/reason/heartbeat` 维持 lease；当 `runtime.worker_healthcheck=startup_and_task` 时，真正启动前再对选中的 Worker 执行一次健康检查；如果失败，则本次任务作废；该 Worker 会进入一个短暂不可选窗口，等待后续轮次再尝试
 
 ---
 
@@ -198,7 +198,7 @@ dispatcher/
 
 本文档附录给出：
 
-- `dispatch.yaml` 的示例内容
+- `dispatch.example.yaml` 的示例内容
 - 上述 markdown prompt 的示例内容
 
 ---
@@ -813,6 +813,7 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 - `runtime.max_project_workers` 必须存在
 - `runtime.interval` 必须存在
 - `runtime.healthcheck_timeout` 必须存在
+- `runtime.worker_healthcheck` 如果存在，只允许 `startup_and_task`、`startup_only`、`disabled`
 - `runtime.prompt_group` 必须存在
 - `tasks.bootstrap.timeout` 必须存在
 - `tasks.bootstrap.conclude_timeout` 必须存在
@@ -841,7 +842,7 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 任务真正派发时，还需要做运行时校验：
 
 - driver 必须存在且支持该任务类型
-- 真正启动任务前，driver 的健康检查必须能成功执行；退出码 `0` 才算健康
+- 当 `runtime.worker_healthcheck=startup_and_task` 时，真正启动任务前，driver 的健康检查必须能成功执行；退出码 `0` 才算健康
 - `explore` 进入 timeout / parse-fail 后的 `explore_conclude` fallback，不再重复执行健康检查，而是直接尝试 conclude 并继续走结果校验
 - 只有支持当前任务类型的 Worker 才能被选中
 - 只有当前运行中任务数小于 `max_running` 的 Worker 才能被选中
@@ -871,6 +872,7 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 | `runtime.max_project_workers` | 是 | 单个项目内同时运行的任务上限，统一计入 `bootstrap`、`reason` 和 `explore` |
 | `runtime.interval` | 是 | 统一节拍配置；既是 Dispatcher 主循环间隔，也是带 claim 任务的 heartbeat 周期 |
 | `runtime.healthcheck_timeout` | 是 | Worker 健康检查的统一外层 watchdog 超时 |
+| `runtime.worker_healthcheck` | 否 | Worker 健康检查模式：`startup_and_task`、`startup_only` 或 `disabled`；默认 `startup_only` |
 | `runtime.prompt_group` | 是 | 当前使用的 prompt 组目录名 |
 
 ### `container.*`
@@ -914,7 +916,7 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 
 补充：
 
-- Worker 选择顺序是：先过滤任务类型、`max_running` 和处于本地 `retry_after` 窗口内的 Worker，再按 `priority`，同优先级优先选当前运行数更少的，最后随机；`bootstrap` 和 `explore` 都会先 claim，再启动任务；真正启动前会做一次健康检查，失败的 Worker 会进入短暂不可选窗口；进入 `bootstrap_conclude` / `explore_conclude` fallback 时不再重复健康检查
+- Worker 选择顺序是：先过滤任务类型、`max_running` 和处于本地 `retry_after` 窗口内的 Worker，再按 `priority`，同优先级优先选当前运行数更少的，最后随机；`bootstrap` 和 `explore` 都会先 claim，再启动任务；当 `runtime.worker_healthcheck=startup_and_task` 时，真正启动前会做一次健康检查，失败的 Worker 会进入短暂不可选窗口；进入 `bootstrap_conclude` / `explore_conclude` fallback 时不再重复健康检查
 - 健康检查、执行命令、session 提取、二阶段 `conclude` 都由对应 driver 代码负责
 - prompt 内容从代码工程里的 markdown 资源加载
 
@@ -922,7 +924,7 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 
 ## 附录：示例配置与 Prompt 内容
 
-### `dispatch.yaml`
+### `dispatch.example.yaml`
 
 ```yaml
 server: "http://127.0.0.1:8000"
@@ -933,6 +935,7 @@ runtime:
   max_project_workers: 2  # per-project running tasks, including bootstrap + reason + explore
   interval: 3  # intentional shared cadence: scheduler loop interval + claim-task heartbeat interval, in seconds
   healthcheck_timeout: 15  # shared watchdog for all worker healthchecks, in seconds
+  worker_healthcheck: "startup_only"  # startup_and_task | startup_only | disabled
   prompt_group: "default"  # selects prompts/<group>/
 
 tasks:

@@ -139,6 +139,12 @@ Both setup methods require the worker container image:
 ```bash
 docker pull --platform=linux/amd64 ghcr.io/oritera/cairn-worker-container:latest
 ```
+
+Create your local dispatcher configuration and fill in your LLM endpoints and API keys:
+
+```bash
+cp dispatch.example.yaml dispatch.yaml
+```
  
 ### Docker Compose (recommended)
  
@@ -148,8 +154,6 @@ Pull the base image used to build Cairn:
 docker pull ghcr.io/astral-sh/uv:python3.13-trixie
 ```
  
-Edit `dispatch.yaml` and fill in your LLM endpoints and API keys, then start both services:
- 
 ```bash
 docker compose up --build
 ```
@@ -157,8 +161,6 @@ docker compose up --build
 This starts `cairn-server` on port `8000` and `cairn-dispatcher` once the server passes its health check. The dispatcher mounts `dispatch.yaml` from the project root and connects to Docker via the host socket. Data is persisted to `./datas/cairn/`.
  
 ### Manual
- 
-Edit `dispatch.yaml` and fill in your LLM endpoints and API keys, then:
  
 ```bash
 # Start the server
