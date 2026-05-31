@@ -171,6 +171,14 @@ uv run --project cairn cairn dispatch --config dispatch.yaml
 uv run --project cairn cairn dispatch --config dispatch.yaml --startup-healthcheck-only
 ```
 
+### Tests
+
+Run the fast regression suite without Docker or live model endpoints:
+
+```bash
+uv run --project cairn --group dev pytest
+```
+
 ## Disclaimer
 
 Cairn is a general-purpose problem-solving engine. Although it supports penetration testing, CTF solving, security assessment, and vulnerability research workflows, it is intended to be used only in environments where you have explicit authorization to operate.
