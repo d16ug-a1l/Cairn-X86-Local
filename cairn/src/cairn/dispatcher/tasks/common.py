@@ -5,7 +5,7 @@ import time
 import uuid
 from dataclasses import dataclass
 
-from cairn.dispatcher.config import WorkerConfig
+from cairn.dispatcher.config import DispatchConfig, WorkerConfig
 from cairn.dispatcher.protocol.client import CairnClient
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.runtime.containers import ContainerManager
@@ -52,6 +52,10 @@ def cancel_reason(result: ProcessResult, cancellation: TaskCancellation | None =
 
 def communicate_timeout(timeout_seconds: int, grace_seconds: int = PROCESS_COMMUNICATE_GRACE_SECONDS) -> int:
     return timeout_seconds + grace_seconds
+
+
+def task_healthcheck_enabled(config: DispatchConfig) -> bool:
+    return config.runtime.worker_healthcheck == "startup_and_task"
 
 
 def write_graph_snapshot_reference(

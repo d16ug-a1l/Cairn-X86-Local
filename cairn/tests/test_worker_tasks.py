@@ -116,6 +116,7 @@ def test_explore_early_plain_text_exit_uses_conclude_fallback(monkeypatch) -> No
 
 def test_explore_healthcheck_failure_releases_claim(monkeypatch) -> None:
     config = make_config()
+    config.runtime.worker_healthcheck = "startup_and_task"
     intent = make_intent()
     project = make_project(intents=[intent])
     client = FakeClient(project)
@@ -222,3 +223,41 @@ def test_reason_complete_treats_inactive_project_as_success(monkeypatch) -> None
     assert outcome == "success"
     assert client.released_reasons == [("proj_001", "test-worker")]
 
+
+def test_reason_startup_only_mode_skips_task_healthcheck(monkeypatch) -> None:
+    config = make_config()
+    config.runtime.worker_healthcheck = "startup_only"
+    project = make_project()
+    client = FakeClient(project)
+    containers = FakeContainerManager()
+    lease = FakeLease()
+
+    monkeypatch.setattr(reason, "get_driver", lambda _name: FakeDriver())
+    monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(lease))
+    monkeypatch.setattr(
+        reason,
+        "run_healthcheck",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("task healthcheck should be skipped")),
+    )
+    monkeypatch.setattr(
+        reason,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(
+            0,
+            '{"accepted":true,"data":{"intents":[{"from":["f001"],"description":"next"}]}}',
+            "",
+        ),
+    )
+
+    outcome = reason.run_reason_task(
+        config,
+        client,
+        containers,
+        project,
+        "graph",
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    assert outcome == "success"
+    assert client.created_intents == [("proj_001", ["f001"], "next", "test-worker")]

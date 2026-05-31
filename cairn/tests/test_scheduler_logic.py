@@ -203,3 +203,39 @@ def test_select_worker_reports_busy_unhealthy_rejected_and_unsupported_workers(m
     assert selection.blocked_unhealthy == ["unhealthy(10.0s)"]
     assert selection.blocked_rejected == ["rejected(20.0s)"]
     assert selection.blocked_task_type == ["unsupported"]
+
+
+def test_disabled_worker_healthcheck_skips_automatic_startup_but_force_runs_diagnostic() -> None:
+    loop = _loop()
+    config = make_config()
+    loop.config = config.model_copy(
+        update={"runtime": config.runtime.model_copy(update={"worker_healthcheck": "disabled"})}
+    )
+    calls: list[bool] = []
+    loop._run_startup_healthchecks = lambda *, show_commands: calls.append(show_commands)
+    loop._startup_healthchecks_checked = False
+
+    loop.run_startup_healthchecks()
+
+    assert calls == []
+    assert loop._startup_healthchecks_checked
+
+    loop._startup_healthchecks_checked = False
+    loop.run_startup_healthchecks(show_commands=True, force=True)
+
+    assert calls == [True]
+
+
+def test_startup_only_worker_healthcheck_runs_automatic_startup_check() -> None:
+    loop = _loop()
+    config = make_config()
+    loop.config = config.model_copy(
+        update={"runtime": config.runtime.model_copy(update={"worker_healthcheck": "startup_only"})}
+    )
+    calls: list[bool] = []
+    loop._run_startup_healthchecks = lambda *, show_commands: calls.append(show_commands)
+    loop._startup_healthchecks_checked = False
+
+    loop.run_startup_healthchecks()
+
+    assert calls == [False]

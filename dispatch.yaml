@@ -15,8 +15,11 @@ runtime:
   max_running_projects: 3
   # Per-project worker cap. Prevents one project from monopolizing the whole dispatcher.
   max_project_workers: 4
-  # Healthcheck timeout for each worker process before a task is assigned.
+  # Timeout for each enabled worker healthcheck.
   healthcheck_timeout: 20
+  # "startup_and_task" checks at dispatcher startup and before every task.
+  # "startup_only" checks only at startup. "disabled" skips automatic worker checks.
+  worker_healthcheck: "startup_only"
   # Prompt set loaded from cairn/src/cairn/dispatcher/prompts/.
   prompt_group: "default"
 

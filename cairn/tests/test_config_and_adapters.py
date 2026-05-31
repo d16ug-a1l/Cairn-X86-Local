@@ -23,6 +23,17 @@ def test_dispatch_config_merges_common_env_with_worker_override() -> None:
     assert config.workers[0].env["OVERRIDE"] == "worker"
 
 
+def test_dispatch_config_defaults_worker_healthcheck_and_rejects_unknown_mode() -> None:
+    payload = make_config().model_dump()
+    payload["runtime"].pop("worker_healthcheck")
+
+    assert DispatchConfig.model_validate(payload).runtime.worker_healthcheck == "startup_only"
+
+    payload["runtime"]["worker_healthcheck"] = "sometimes"
+    with pytest.raises(ValidationError):
+        DispatchConfig.model_validate(payload)
+
+
 def test_dispatch_config_rejects_duplicate_workers_and_excess_project_parallelism() -> None:
     payload = make_config().model_dump()
     payload["workers"].append(dict(payload["workers"][0]))

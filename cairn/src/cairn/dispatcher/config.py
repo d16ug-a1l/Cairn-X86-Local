@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 TaskType = Literal["reason", "explore", "bootstrap"]
 WorkerType = Literal["claudecode", "codex", "pi", "mock"]
 CompletedAction = Literal["remove", "stop"]
+WorkerHealthcheckMode = Literal["startup_and_task", "startup_only", "disabled"]
 
 WORKER_ENV_KEYS: dict[WorkerType, tuple[str, ...]] = {
     "claudecode": (
@@ -160,6 +161,7 @@ class RuntimeConfig(BaseModel):
     max_project_workers: int = Field(gt=0)
     interval: int = Field(gt=0)
     healthcheck_timeout: int = Field(gt=0)
+    worker_healthcheck: WorkerHealthcheckMode = "startup_only"
     prompt_group: str = Field(min_length=1)
 
 

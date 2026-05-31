@@ -103,12 +103,16 @@ class DispatcherLoop:
 
     def run_startup_healthchecks_only(self) -> None:
         try:
-            self.run_startup_healthchecks(show_commands=True)
+            self.run_startup_healthchecks(show_commands=True, force=True)
         finally:
             self.close()
 
-    def run_startup_healthchecks(self, *, show_commands: bool = False) -> None:
+    def run_startup_healthchecks(self, *, show_commands: bool = False, force: bool = False) -> None:
         if self._startup_healthchecks_checked:
+            return
+        if not force and self.config.runtime.worker_healthcheck == "disabled":
+            LOG.info("skip startup worker healthchecks because runtime.worker_healthcheck=disabled")
+            self._startup_healthchecks_checked = True
             return
         self._run_startup_healthchecks(show_commands=show_commands)
         self._startup_healthchecks_checked = True
