@@ -212,6 +212,11 @@ class DispatcherLoop:
             if project.project.reason is not None:
                 return False
             return self._dispatch_initial_project(project)
+        if project.project.reason is None:
+            reason_trigger = self._reason_trigger(project)
+            if reason_trigger is not None:
+                export_yaml = self.client.export_project(summary.id)
+                return self._dispatch_reason(project, export_yaml, reason_trigger)
         running_intent_ids = self._project_running_explore_intents(summary.id)
         unclaimed_intents = [
             intent
@@ -242,21 +247,17 @@ class DispatcherLoop:
                 project.project.reason.worker,
             )
             return False
-        reason_trigger = self._reason_trigger(project)
-        if reason_trigger is None:
-            self._log_changed(
-                f"{skip_scope}:graph_unchanged",
-                logging.DEBUG,
-                "skip reason project=%s because reason state unchanged facts=%s hints=%s open_intents=%s intents=%s",
-                summary.id,
-                len(project.facts),
-                len(project.hints),
-                self._project_open_intent_count(project),
-                len(project.intents),
-            )
-            return False
-        export_yaml = self.client.export_project(summary.id)
-        return self._dispatch_reason(project, export_yaml, reason_trigger)
+        self._log_changed(
+            f"{skip_scope}:graph_unchanged",
+            logging.DEBUG,
+            "skip reason project=%s because reason state unchanged facts=%s hints=%s open_intents=%s intents=%s",
+            summary.id,
+            len(project.facts),
+            len(project.hints),
+            self._project_open_intent_count(project),
+            len(project.intents),
+        )
+        return False
 
     def _dispatch_initial_project(self, project: ProjectDetail) -> bool:
         intent = self._get_bootstrap_intent(project)
