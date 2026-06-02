@@ -30,6 +30,7 @@ def _summary(project_id: str, status: str) -> ProjectSummary:
         id=project_id,
         title=project_id,
         status=status,
+        bootstrap_enabled=True,
         created_at="2026-01-01T00:00:00Z",
         fact_count=2,
         intent_count=0,
@@ -148,6 +149,97 @@ def test_new_fact_dispatches_reason_before_unclaimed_explore_intent() -> None:
 
     assert loop._try_dispatch_project(_summary("proj_001", "active"))
     assert dispatched == [("reason", "facts:3->4")]
+
+
+def test_initial_enabled_project_without_bootstrap_worker_dispatches_reason() -> None:
+    loop = _loop()
+    config = make_config()
+    loop.config = config.model_copy(
+        update={
+            "workers": [
+                config.workers[0].model_copy(update={"task_types": ["reason", "explore"]})
+            ]
+        }
+    )
+    loop.futures = {}
+    project = make_project()
+    project.facts = project.facts[:2]
+    loop.container_manager = type("Containers", (), {"container_name": lambda _self, project_id: project_id})()
+    loop.client = type(
+        "Client",
+        (),
+        {
+            "get_project": lambda _self, _project_id: project,
+            "export_project": lambda _self, _project_id: "graph",
+        },
+    )()
+    dispatched: list[tuple[str, str]] = []
+    loop._dispatch_initial_project = lambda _project: dispatched.append(("bootstrap", "")) or True
+    loop._dispatch_reason = lambda _project, _graph, trigger: dispatched.append(("reason", trigger)) or True
+
+    assert loop._try_dispatch_project(_summary("proj_001", "active"))
+    assert dispatched == [("reason", "initial")]
+
+
+def test_initial_disabled_project_skips_configured_bootstrap_worker() -> None:
+    loop = _loop()
+    loop.config = make_config()
+    loop.futures = {}
+    project = make_project()
+    project.project.bootstrap_enabled = False
+    project.facts = project.facts[:2]
+    loop.container_manager = type("Containers", (), {"container_name": lambda _self, project_id: project_id})()
+    loop.client = type(
+        "Client",
+        (),
+        {
+            "get_project": lambda _self, _project_id: project,
+            "export_project": lambda _self, _project_id: "graph",
+        },
+    )()
+    dispatched: list[tuple[str, str]] = []
+    loop._dispatch_initial_project = lambda _project: dispatched.append(("bootstrap", "")) or True
+    loop._dispatch_reason = lambda _project, _graph, trigger: dispatched.append(("reason", trigger)) or True
+
+    assert loop._try_dispatch_project(_summary("proj_001", "active"))
+    assert dispatched == [("reason", "initial")]
+
+
+def test_initial_enabled_project_without_bootstrap_worker_skips_bootstrap() -> None:
+    loop = _loop()
+    config = make_config()
+    loop.config = config.model_copy(
+        update={
+            "workers": [
+                config.workers[0].model_copy(update={"task_types": ["reason", "explore"]})
+            ]
+        }
+    )
+    project = make_project()
+    project.project.bootstrap_enabled = True
+    project.facts = project.facts[:2]
+
+    assert not loop._project_requires_bootstrap(project)
+
+
+def test_initial_enabled_project_keeps_existing_bootstrap_intent_when_workers_change() -> None:
+    loop = _loop()
+    config = make_config()
+    loop.config = config.model_copy(
+        update={
+            "workers": [
+                config.workers[0].model_copy(update={"task_types": ["reason", "explore"]})
+            ]
+        }
+    )
+    project = make_project(intents=[make_intent()])
+    project.project.bootstrap_enabled = True
+    project.facts = project.facts[:2]
+    project.intents[0].description = "bootstrap"
+    project.intents[0].creator = "dispatcher.bootstrap"
+    project.intents[0].from_ = ["origin"]
+
+    assert loop._project_requires_bootstrap(project)
 
 
 def test_cancel_inactive_tasks_marks_stopped_and_deleted_projects() -> None:

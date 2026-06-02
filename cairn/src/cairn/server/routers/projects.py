@@ -61,6 +61,7 @@ def list_projects():
                 id=row["id"],
                 title=row["title"],
                 status=row["status"],
+                bootstrap_enabled=bool(row["bootstrap_enabled"]),
                 created_at=row["created_at"],
                 reason=project_reason_from_row(row),
                 fact_count=row["fact_count"],
@@ -80,8 +81,8 @@ def create_project(body: CreateProjectRequest):
         now = utcnow()
 
         conn.execute(
-            "INSERT INTO projects (id, title, status, created_at) VALUES (?, ?, 'active', ?)",
-            (pid, body.title, now),
+            "INSERT INTO projects (id, title, status, bootstrap_enabled, created_at) VALUES (?, ?, 'active', ?, ?)",
+            (pid, body.title, body.bootstrap_enabled, now),
         )
         conn.execute(
             "INSERT INTO facts (id, project_id, description) VALUES (?, ?, ?)",
@@ -103,7 +104,14 @@ def create_project(body: CreateProjectRequest):
                 hints.append(Hint(id=hid, content=h.content, creator=h.creator, created_at=now))
 
         return ProjectDetail(
-            project=ProjectMeta(id=pid, title=body.title, status="active", created_at=now, reason=None),
+            project=ProjectMeta(
+                id=pid,
+                title=body.title,
+                status="active",
+                bootstrap_enabled=body.bootstrap_enabled,
+                created_at=now,
+                reason=None,
+            ),
             facts=[
                 Fact(id="origin", description=body.origin),
                 Fact(id="goal", description=body.goal),

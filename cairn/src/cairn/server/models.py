@@ -47,6 +47,7 @@ class ProjectMeta(BaseModel):
     id: str
     title: str
     status: Literal["active", "stopped", "completed"]
+    bootstrap_enabled: bool
     created_at: str
     reason: ProjectReason | None = None
 
@@ -83,6 +84,7 @@ class CreateProjectRequest(BaseModel):
     title: str
     origin: str
     goal: str
+    bootstrap_enabled: bool = True
     hints: list[CreateHintInline] | None = None
 
     @field_validator("title", "origin", "goal")

@@ -199,6 +199,7 @@ def project_meta_from_row(row: sqlite3.Row) -> ProjectMeta:
         id=row["id"],
         title=row["title"],
         status=row["status"],
+        bootstrap_enabled=bool(row["bootstrap_enabled"]),
         created_at=row["created_at"],
         reason=project_reason_from_row(row),
     )

@@ -801,6 +801,10 @@
       <input x-model="newProject.title" placeholder="Project title" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-400 transition placeholder:text-slate-300">
       <textarea x-model="newProject.origin" placeholder="Origin — starting point" rows="2" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-400 transition placeholder:text-slate-300"></textarea>
       <textarea x-model="newProject.goal" placeholder="Goal — what to achieve" rows="2" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-400 transition placeholder:text-slate-300"></textarea>
+      <label class="flex items-center gap-2 px-1 text-sm text-slate-600">
+        <input type="checkbox" x-model="newProject.bootstrap" class="h-4 w-4 rounded border-slate-300 text-brand-500 focus:ring-brand-200">
+        <span>Run bootstrap attempt</span>
+      </label>
 
       <div>
         <div class="flex items-center justify-between mb-2">
@@ -1097,7 +1101,7 @@ function cairnApp() {
     exportProjectId: '',
     showDeleteModal: false,
 
-    newProject: { title: '', origin: '', goal: '', hints: [{ content: '' }] },
+    newProject: { title: '', origin: '', goal: '', bootstrap: true, hints: [{ content: '' }] },
     intentForm: { description: '' },
     concludeForm: { description: '', intentId: '' },
     completeForm: { description: '' },
@@ -3260,12 +3264,17 @@ function cairnApp() {
       try {
         const actor = this.actorName();
         const hintContents = this.newProject.hints.filter(h => h.content?.trim());
-        const body = { title: this.newProject.title, origin: this.newProject.origin, goal: this.newProject.goal };
+        const body = {
+          title: this.newProject.title,
+          origin: this.newProject.origin,
+          goal: this.newProject.goal,
+          bootstrap_enabled: this.newProject.bootstrap
+        };
         const hints = hintContents.map(h => ({ content: h.content.trim(), creator: actor }));
         if (hints.length > 0) body.hints = hints;
         const data = await this.api('POST', '/projects', body);
         this.showNewProject = false;
-        this.newProject = { title:'', origin:'', goal:'', hints: [{ content:'' }] };
+        this.newProject = { title:'', origin:'', goal:'', bootstrap: true, hints: [{ content:'' }] };
         await this.loadProjects();
         await this.openProject(data.project.id);
         this.showToast('Project created');

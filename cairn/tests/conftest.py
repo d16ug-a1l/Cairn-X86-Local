@@ -49,6 +49,7 @@ def make_project(*, intents: list[Intent] | None = None) -> ProjectDetail:
             id="proj_001",
             title="test",
             status="active",
+            bootstrap_enabled=True,
             created_at="2026-01-01T00:00:00Z",
         ),
         facts=[
@@ -172,4 +173,3 @@ class FakeDriver:
 
     def extract_response_text(self, stdout: str, _stderr: str) -> str:
         return stdout
-

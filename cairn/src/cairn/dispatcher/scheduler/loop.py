@@ -215,7 +215,10 @@ class DispatcherLoop:
         if self._is_initial_project(project):
             if project.project.reason is not None:
                 return False
-            return self._dispatch_initial_project(project)
+            if self._project_requires_bootstrap(project):
+                return self._dispatch_initial_project(project)
+            export_yaml = self.client.export_project(summary.id)
+            return self._dispatch_reason(project, export_yaml, "initial")
         if project.project.reason is None:
             reason_trigger = self._reason_trigger(project)
             if reason_trigger is not None:
@@ -594,6 +597,13 @@ class DispatcherLoop:
         if not project.intents:
             return True
         return all(self._is_bootstrap_intent(intent) for intent in project.intents)
+
+    def _project_requires_bootstrap(self, project: ProjectDetail) -> bool:
+        if not project.project.bootstrap_enabled:
+            return False
+        if self._get_bootstrap_intent(project) is not None:
+            return True
+        return any("bootstrap" in worker.task_types for worker in self.config.workers)
 
     def _create_bootstrap_intent(self, project_id: str) -> Intent | None:
         response = self.client.create_intent(

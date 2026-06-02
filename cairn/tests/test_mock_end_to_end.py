@@ -196,7 +196,13 @@ def _phase(
     return json.dumps(payload)
 
 
-def _config(*, bootstrap: str, reason: str, explore: str) -> DispatchConfig:
+def _config(
+    *,
+    bootstrap: str,
+    reason: str,
+    explore: str,
+    task_types: list[str] | None = None,
+) -> DispatchConfig:
     return DispatchConfig.model_validate(
         {
             "server": "in-process",
@@ -222,7 +228,7 @@ def _config(*, bootstrap: str, reason: str, explore: str) -> DispatchConfig:
                 {
                     "name": "mock-worker",
                     "type": "mock",
-                    "task_types": ["bootstrap", "reason", "explore"],
+                    "task_types": task_types or ["bootstrap", "reason", "explore"],
                     "max_running": 1,
                     "priority": 0,
                     "env": {
@@ -341,3 +347,32 @@ def test_mock_scheduler_runs_reason_explore_reason_complete_chain(http_client: T
     ]
     assert any("/reason_execute-" in path and "f002" in content for _, path, content in containers.writes)
     assert any("/explore_execute-" in path and "f001" in content for _, path, content in containers.writes)
+
+
+def test_mock_scheduler_enabled_project_skips_bootstrap_when_worker_does_not_support_it(
+    http_client: TestClient,
+) -> None:
+    client = InProcessClient(http_client)
+    containers = LocalContainerManager()
+    loop = _loop(
+        _config(
+            bootstrap=_phase("complete"),
+            reason=_phase("complete", zero_outcomes=["intent"]),
+            explore=_phase("fact"),
+            task_types=["reason", "explore"],
+        ),
+        client,
+        containers,
+    )
+    project_id = _create_project(http_client)
+
+    try:
+        _dispatch_and_wait(loop)
+        project = client.get_project(project_id)
+    finally:
+        loop.close()
+
+    assert project.project.status == "completed"
+    assert [(intent.description, intent.to) for intent in project.intents] == [
+        ("mock complete from origin", "goal")
+    ]

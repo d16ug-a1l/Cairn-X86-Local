@@ -26,6 +26,7 @@ def _create_project(client: TestClient) -> str:
         },
     )
     assert response.status_code == 201
+    assert response.json()["project"]["bootstrap_enabled"] is True
     return response.json()["project"]["id"]
 
 
@@ -175,3 +176,34 @@ def test_live_reason_lease_rejects_competing_worker(client: TestClient) -> None:
 
     assert response.status_code == 409
     assert "worker-a" in response.json()["detail"]
+
+
+def test_project_creation_persists_disabled_bootstrap_and_exports_it(client: TestClient) -> None:
+    response = client.post(
+        "/projects",
+        json={
+            "title": "no bootstrap",
+            "origin": "start",
+            "goal": "finish",
+            "bootstrap_enabled": False,
+        },
+    )
+
+    assert response.status_code == 201
+    project_id = response.json()["project"]["id"]
+    assert client.get(f"/projects/{project_id}").json()["project"]["bootstrap_enabled"] is False
+    assert "bootstrap_enabled: false" in client.get(f"/projects/{project_id}/export?format=yaml").text
+
+
+def test_project_creation_rejects_invalid_bootstrap_enabled(client: TestClient) -> None:
+    response = client.post(
+        "/projects",
+        json={
+            "title": "invalid bootstrap",
+            "origin": "start",
+            "goal": "finish",
+            "bootstrap_enabled": "sometimes",
+        },
+    )
+
+    assert response.status_code == 422

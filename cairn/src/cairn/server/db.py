@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
+    bootstrap_enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     reason_worker TEXT,
     reason_trigger TEXT,
@@ -89,6 +90,17 @@ def configure(path: Path) -> None:
     _db_path.parent.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        _ensure_project_columns(conn)
+
+
+def _ensure_project_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
+    if "bootstrap_enabled" not in columns:
+        conn.execute("ALTER TABLE projects ADD COLUMN bootstrap_enabled INTEGER NOT NULL DEFAULT 1")
+        if "bootstrap_mode" in columns:
+            conn.execute(
+                "UPDATE projects SET bootstrap_enabled = CASE WHEN bootstrap_mode = 'disabled' THEN 0 ELSE 1 END"
+            )
 
 
 @contextmanager
