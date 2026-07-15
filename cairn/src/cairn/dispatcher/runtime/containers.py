@@ -5,7 +5,6 @@ import logging
 from pathlib import PurePosixPath
 import tarfile
 import threading
-import uuid
 
 import docker
 from docker.errors import APIError, DockerException, NotFound
@@ -19,7 +18,6 @@ LOG = logging.getLogger(__name__)
 
 class ContainerManager:
     _PREFIX = "cairn-dispatch-"
-    _STARTUP_PREFIX = "cairn-startup-healthcheck-"
 
     def __init__(self, config: ContainerConfig):
         self._config = config
@@ -80,22 +78,6 @@ class ContainerManager:
                 lock = threading.Lock()
                 self._ensure_running_locks[name] = lock
             return lock
-
-    def create_startup_container(self) -> str:
-        name = f"{self._STARTUP_PREFIX}{uuid.uuid4().hex[:12]}"
-        LOG.debug("creating startup healthcheck container container=%s image=%s", name, self._config.image)
-        try:
-            self._client.containers.run(
-                self._config.image,
-                ["sleep", "infinity"],
-                detach=True,
-                name=name,
-                network_mode=self._config.network_mode,
-                cap_add=self._config.cap_add or None,
-            )
-        except DockerException as exc:
-            raise RuntimeError(f"failed to create startup container {name}: {exc}") from exc
-        return name
 
     def inspect_state(self, name: str) -> str | None:
         container = self._get_container(name)
@@ -221,17 +203,6 @@ class ContainerManager:
             raise RuntimeError(f"failed to write container file {path}: {exc}") from exc
         if not ok:
             raise RuntimeError(f"failed to write container file {path}")
-
-    def remove_container(self, name: str, *, force: bool = True) -> None:
-        container = self._get_container(name)
-        if container is None:
-            return
-        try:
-            container.remove(force=force)
-        except NotFound:
-            return
-        except DockerException as exc:
-            LOG.warning("failed to remove container=%s error=%s", name, exc)
 
     def _start_existing(self, name: str) -> None:
         LOG.debug("starting container=%s", name)

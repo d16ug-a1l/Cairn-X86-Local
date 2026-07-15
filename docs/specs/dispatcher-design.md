@@ -633,7 +633,7 @@ Dispatcher 固定从 `stdout` 取全文作为模型正文输出。
 
 统一接口至少应覆盖这些能力：
 
-- `build_healthcheck(worker)`：构造健康检查命令
+- `check_health(worker, *, timeout)`：进程内发起一次 HTTP 探活，返回 `HealthResult`
 - `prepare_session()`：需要时预先生成 session id
 - `build_execute(worker, prompt, session)`：构造第一阶段执行命令
 - `extract_session(session, stderr)`：需要时从 `stderr` 提取 session id，或继续使用预生成 session
@@ -654,7 +654,7 @@ Dispatcher 固定从 `stdout` 取全文作为模型正文输出。
 
 ### 健康检查
 
-健康检查由 driver 实现。
+健康检查由 driver 的 `check_health` 实现，Dispatcher 在自己进程内直接发起（用 `requests`），而不是在容器里执行 curl。
 
 目标不是验证“容器活着”，而是验证某个具体 Worker 的 LLM 配置真的可用：
 
@@ -662,18 +662,19 @@ Dispatcher 固定从 `stdout` 取全文作为模型正文输出。
 - API key 有效
 - model 可调用
 
+driver 按各自 provider 的协议构造请求：`claudecode` 打 `{base}/v1/messages`，`codex` 打 `{base}/responses`，`pi` 按 `PI_PROVIDER_API` 选择 `/chat/completions`、`/responses` 或 `/v1/messages`。请求会带上 worker 环境里的 `http(s)_proxy`，从而与 worker 实际出网路径一致。
+
 执行规则：
 
 - 每次准备启动某个 Worker 进程前，都先执行一次健康检查
 - `explore` 进入 timeout / parse-fail 后的 `explore_conclude` fallback 不再重复执行健康检查，而是直接尝试 conclude，并继续依赖 JSON / schema 校验决定是否写回
-- 退出码 `0` 视为健康
-- 非 `0` / 超时（Dispatcher 外层 watchdog 由 `runtime.healthcheck_timeout` 控制）/ 命令起不来，视为不健康
-- driver 内部的 HTTP 探活不再自行设置超时，统一由 Dispatcher 外层 watchdog 限制
+- HTTP 2xx 视为健康
+- 非 2xx / 连接失败 / 超时（`requests` 超时由 `runtime.healthcheck_timeout` 控制）视为不健康
 - 如果这次失败，本次任务直接作废，并将这个 Worker 放入一个短暂不可选窗口
 - 窗口结束后，后续轮次再次选择到这个 Worker 时重新检查
 - Dispatcher 内部会为最近失败的 Worker 记录一个本地 `retry_after`，在这之前不再派发给它
 
-Dispatcher 只需要看退出码，不需要理解响应体。
+Dispatcher 只看 HTTP 状态码，不解析响应体。`local` 模式下不打 API（本机 CLI 自带鉴权），改为启动时对各 CLI 执行 `--help` 探测。
 
 ### CLI 接入约定
 
@@ -685,7 +686,7 @@ Dispatcher 只需要看退出码，不需要理解响应体。
 - `ANTHROPIC_BASE_URL`
 - `ANTHROPIC_AUTH_TOKEN`
 
-健康检查可在 driver 内部按等价方式实现：
+健康检查等价于下面这条请求（实现为 Dispatcher 进程内的 HTTP 调用，不再在容器里执行 curl）：
 
 ```bash
 curl -sS --fail -o /dev/null \
@@ -722,7 +723,7 @@ claude -r "{session}" --dangerously-skip-permissions -p -- "{prompt}"
 - `CODEX_BASE_URL`
 - `OPENAI_API_KEY`
 
-健康检查可在 driver 内部按等价方式实现：
+健康检查等价于下面这条请求（实现为 Dispatcher 进程内的 HTTP 调用，不再在容器里执行 curl）：
 
 ```bash
 curl -sS --fail -o /dev/null \

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from cairn.dispatcher.config import DispatchConfig
 from cairn.dispatcher.protocol.client import ApiResult
 from cairn.dispatcher.workers.base import DriverResult
+from cairn.dispatcher.workers.health import HealthResult
 from cairn.server.models import Fact, Hint, Intent, ProjectDetail, ProjectMeta
 
 
@@ -150,6 +151,7 @@ class FakeDriver:
     def __init__(self) -> None:
         self.execute_prompts: list[str] = []
         self.conclude_prompts: list[str] = []
+        self.health = HealthResult(ok=True, status=200, detail="")
 
     def supports_conclude(self) -> bool:
         return True
@@ -157,8 +159,8 @@ class FakeDriver:
     def prepare_session(self) -> str:
         return "session-001"
 
-    def build_healthcheck(self, _worker) -> list[str]:
-        return ["healthcheck"]
+    def check_health(self, _worker, *, timeout: float) -> HealthResult:
+        return self.health
 
     def build_execute(self, _worker, prompt: str, session: str | None) -> DriverResult:
         self.execute_prompts.append(prompt)

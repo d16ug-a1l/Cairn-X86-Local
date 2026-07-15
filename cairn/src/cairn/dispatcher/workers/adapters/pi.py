@@ -6,6 +6,7 @@ from typing import Any
 
 from cairn.dispatcher.config import WorkerConfig
 from cairn.dispatcher.workers.base import DriverResult, WorkerDriver
+from cairn.dispatcher.workers.health import HealthResult, http_ping, proxies_from_env
 
 
 class PiDriver(WorkerDriver):
@@ -17,26 +18,41 @@ class PiDriver(WorkerDriver):
     def local_binary(self) -> str | None:
         return "pi"
 
-    def build_healthcheck(self, worker: WorkerConfig) -> list[str]:
+    def check_health(self, worker: WorkerConfig, *, timeout: float) -> HealthResult:
         env = worker.env
-        return self._wrap_with_models(
-            worker,
-            [
-                "--provider",
-                "cairn",
-                "--model",
-                env["PI_MODEL"],
-                "--mode",
-                "json",
-                "--session-dir",
-                self._session_dir(worker),
-                "--no-session",
-                "--no-tools",
-                "-p",
-                "Reply with exactly pong.",
-            ],
-            enable_tools=False,
+        base = env["PI_BASE_URL"].rstrip("/")
+        model = env["PI_MODEL"]
+        api = env["PI_PROVIDER_API"]
+        proxies = proxies_from_env(env)
+        headers = {"Authorization": f"Bearer {env['PI_API_KEY']}", "content-type": "application/json"}
+        if "anthropic" in api:
+            return http_ping(
+                f"{base}/v1/messages",
+                headers={**headers, "anthropic-version": "2023-06-01"},
+                json_body={"model": model, "max_tokens": 10, "messages": [{"role": "user", "content": "ping"}]},
+                timeout=timeout,
+                proxies=proxies,
+            )
+        if "responses" in api:
+            return http_ping(
+                f"{base}/responses",
+                headers=headers,
+                json_body={"model": model, "input": [{"role": "user", "content": "ping"}], "stream": False},
+                timeout=timeout,
+                proxies=proxies,
+            )
+        # openai-completions and anything else: OpenAI-compatible chat/completions
+        return http_ping(
+            f"{base}/chat/completions",
+            headers=headers,
+            json_body={"model": model, "max_tokens": 10, "messages": [{"role": "user", "content": "ping"}]},
+            timeout=timeout,
+            proxies=proxies,
         )
+
+    def describe_health(self, worker: WorkerConfig) -> str:
+        env = worker.env
+        return f"POST {env['PI_BASE_URL']} (api={env['PI_PROVIDER_API']}, model={env['PI_MODEL']})"
 
     def build_execute(self, worker: WorkerConfig, prompt: str, session: str | None) -> DriverResult:
         if self.local:

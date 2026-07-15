@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from cairn.dispatcher.protocol.client import ApiResult
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.runtime.process import ProcessResult
-from cairn.dispatcher.tasks.common import HealthcheckRun
+from cairn.dispatcher.workers.health import HealthResult
 from cairn.dispatcher.tasks import bootstrap, explore, reason
 
 from conftest import (
@@ -17,10 +17,6 @@ from conftest import (
     make_intent,
     make_project,
 )
-
-
-def _healthy(*_args, **_kwargs) -> HealthcheckRun:
-    return HealthcheckRun(ProcessResult(0, "", ""), duration_ms=1)
 
 
 def _lease_factory(lease: FakeLease):
@@ -38,7 +34,6 @@ def test_reason_writes_graph_snapshot_and_creates_intent(monkeypatch) -> None:
 
     monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: driver)
     monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(lease))
-    monkeypatch.setattr(reason, "run_healthcheck", _healthy)
     monkeypatch.setattr(
         reason,
         "run_worker_process",
@@ -90,7 +85,6 @@ def test_explore_early_plain_text_exit_uses_conclude_fallback(monkeypatch) -> No
 
     monkeypatch.setattr(explore, "get_driver", lambda *_a, **_k: driver)
     monkeypatch.setattr(explore.HeartbeatLease, "for_intent", _lease_factory(lease))
-    monkeypatch.setattr(explore, "run_healthcheck", _healthy)
     monkeypatch.setattr(explore, "_run_process", lambda *_args, **_kwargs: next(results))
 
     outcome = explore.run_explore_task(
@@ -123,13 +117,10 @@ def test_explore_healthcheck_failure_releases_claim(monkeypatch) -> None:
     containers = FakeContainerManager()
     lease = FakeLease()
 
-    monkeypatch.setattr(explore, "get_driver", lambda *_a, **_k: FakeDriver())
+    driver = FakeDriver()
+    driver.health = HealthResult(ok=False, status=401, detail="unauthorized")
+    monkeypatch.setattr(explore, "get_driver", lambda *_a, **_k: driver)
     monkeypatch.setattr(explore.HeartbeatLease, "for_intent", _lease_factory(lease))
-    monkeypatch.setattr(
-        explore,
-        "run_healthcheck",
-        lambda *_args, **_kwargs: HealthcheckRun(ProcessResult(1, "", "unhealthy"), duration_ms=1),
-    )
 
     outcome = explore.run_explore_task(
         config,
@@ -158,7 +149,6 @@ def test_bootstrap_success_concludes_fact_then_completes_project(monkeypatch) ->
 
     monkeypatch.setattr(bootstrap, "get_driver", lambda *_a, **_k: driver)
     monkeypatch.setattr(bootstrap.HeartbeatLease, "for_intent", _lease_factory(lease))
-    monkeypatch.setattr(bootstrap, "run_healthcheck", _healthy)
     monkeypatch.setattr(
         bootstrap,
         "run_worker_process",
@@ -199,7 +189,6 @@ def test_reason_complete_treats_inactive_project_as_success(monkeypatch) -> None
     client.complete = complete  # type: ignore[method-assign]
     monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: FakeDriver())
     monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(lease))
-    monkeypatch.setattr(reason, "run_healthcheck", _healthy)
     monkeypatch.setattr(
         reason,
         "run_worker_process",
@@ -232,13 +221,14 @@ def test_reason_startup_only_mode_skips_task_healthcheck(monkeypatch) -> None:
     containers = FakeContainerManager()
     lease = FakeLease()
 
-    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: FakeDriver())
+    driver = FakeDriver()
+
+    def _boom(*_a, **_k):
+        raise AssertionError("task healthcheck should be skipped")
+
+    driver.check_health = _boom  # type: ignore[method-assign]
+    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: driver)
     monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(lease))
-    monkeypatch.setattr(
-        reason,
-        "run_healthcheck",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("task healthcheck should be skipped")),
-    )
     monkeypatch.setattr(
         reason,
         "run_worker_process",
