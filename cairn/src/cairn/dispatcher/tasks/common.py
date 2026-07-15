@@ -55,6 +55,8 @@ def communicate_timeout(timeout_seconds: int, grace_seconds: int = PROCESS_COMMU
 
 
 def task_healthcheck_enabled(config: DispatchConfig) -> bool:
+    if config.runtime.execution == "local":
+        return False
     return config.runtime.worker_healthcheck == "startup_and_task"
 
 

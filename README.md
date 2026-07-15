@@ -103,6 +103,8 @@ System architecture:
 
 **Cairn Dispatcher** reads the graph, schedules tasks, spins up and tears down worker containers, and is the sole writer to the protocol. Each project gets its own Worker Container; multiple Agent Workers run concurrently inside it. Agent Workers only receive a prompt and return structured output.
 
+Workers can also run directly on the dispatcher host instead of in per-project containers — **local mode**, no Docker required. See [Local mode](#local-mode-no-docker) below.
+
 Supported worker backends: **Claude Code**, **Codex**, and **Pi**.
 
 ## Results
@@ -129,7 +131,7 @@ Supported worker backends: **Claude Code**, **Codex**, and **Pi**.
  
 - macOS or Linux
 - Python ≥ 3.12
-- Docker
+- Docker (container execution only — not needed for local mode)
 
 
 ### Pull required images
@@ -172,6 +174,22 @@ uv run --project cairn cairn dispatch --config dispatch.yaml
 # Run startup health checks only
 uv run --project cairn cairn dispatch --config dispatch.yaml --startup-healthcheck-only
 ```
+
+### Local mode (no Docker)
+
+Instead of one container per project, workers can run directly on the dispatcher host, reusing the machine's already-configured `claude` / `codex` / `pi` CLIs — no Docker, and no API keys in the config.
+
+```bash
+cp dispatch.local.example.yaml dispatch.yaml
+
+# Start the server
+uv run --project cairn cairn serve
+
+# Run the dispatcher on the same host, where the CLIs are installed and logged in
+uv run --project cairn cairn dispatch --config dispatch.yaml
+```
+
+Local mode is selected by `runtime.execution: local` (see `dispatch.local.example.yaml`). On startup the dispatcher checks each configured worker CLI is installed and runnable, and reminds you they must already be logged in. Each project gets an isolated working directory under `local.workspace_root` (default: the dispatcher's current directory). Run the dispatcher directly on the host — not inside Docker — since the agents run with your user's permissions and no sandbox.
 
 ### Tests
 

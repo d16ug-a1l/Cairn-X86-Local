@@ -21,6 +21,13 @@ class WorkerDriver(abc.ABC):
     def supports_conclude(self) -> bool:
         return True
 
+    def local_binary(self) -> str | None:
+        """Executable this driver invokes in local mode, checked on PATH at startup.
+
+        None means the driver has no host binary to verify (or is not used locally).
+        """
+        return None
+
     def prepare_session(self) -> str | None:
         return None
 

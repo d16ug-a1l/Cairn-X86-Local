@@ -123,6 +123,9 @@ else:
 class MockDriver(SeedSessionDriver):
     type_name = "mock"
 
+    def local_binary(self) -> str | None:
+        return "python3"
+
     @staticmethod
     def _argv(worker: WorkerConfig, prompt: str) -> list[str]:
         behavior = resolve_mock_behavior(worker.name, worker.env)
