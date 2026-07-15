@@ -36,7 +36,7 @@ def test_reason_writes_graph_snapshot_and_creates_intent(monkeypatch) -> None:
     lease = FakeLease()
     graph_yaml = "project:\n  title: huge\n" + ("x" * 100_000)
 
-    monkeypatch.setattr(reason, "get_driver", lambda _name: driver)
+    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: driver)
     monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(lease))
     monkeypatch.setattr(reason, "run_healthcheck", _healthy)
     monkeypatch.setattr(
@@ -88,7 +88,7 @@ def test_explore_early_plain_text_exit_uses_conclude_fallback(monkeypatch) -> No
         ]
     )
 
-    monkeypatch.setattr(explore, "get_driver", lambda _name: driver)
+    monkeypatch.setattr(explore, "get_driver", lambda *_a, **_k: driver)
     monkeypatch.setattr(explore.HeartbeatLease, "for_intent", _lease_factory(lease))
     monkeypatch.setattr(explore, "run_healthcheck", _healthy)
     monkeypatch.setattr(explore, "_run_process", lambda *_args, **_kwargs: next(results))
@@ -123,7 +123,7 @@ def test_explore_healthcheck_failure_releases_claim(monkeypatch) -> None:
     containers = FakeContainerManager()
     lease = FakeLease()
 
-    monkeypatch.setattr(explore, "get_driver", lambda _name: FakeDriver())
+    monkeypatch.setattr(explore, "get_driver", lambda *_a, **_k: FakeDriver())
     monkeypatch.setattr(explore.HeartbeatLease, "for_intent", _lease_factory(lease))
     monkeypatch.setattr(
         explore,
@@ -156,7 +156,7 @@ def test_bootstrap_success_concludes_fact_then_completes_project(monkeypatch) ->
     driver = FakeDriver()
     lease = FakeLease()
 
-    monkeypatch.setattr(bootstrap, "get_driver", lambda _name: driver)
+    monkeypatch.setattr(bootstrap, "get_driver", lambda *_a, **_k: driver)
     monkeypatch.setattr(bootstrap.HeartbeatLease, "for_intent", _lease_factory(lease))
     monkeypatch.setattr(bootstrap, "run_healthcheck", _healthy)
     monkeypatch.setattr(
@@ -197,7 +197,7 @@ def test_reason_complete_treats_inactive_project_as_success(monkeypatch) -> None
         return ApiResult(403, text="inactive")
 
     client.complete = complete  # type: ignore[method-assign]
-    monkeypatch.setattr(reason, "get_driver", lambda _name: FakeDriver())
+    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: FakeDriver())
     monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(lease))
     monkeypatch.setattr(reason, "run_healthcheck", _healthy)
     monkeypatch.setattr(
@@ -232,7 +232,7 @@ def test_reason_startup_only_mode_skips_task_healthcheck(monkeypatch) -> None:
     containers = FakeContainerManager()
     lease = FakeLease()
 
-    monkeypatch.setattr(reason, "get_driver", lambda _name: FakeDriver())
+    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: FakeDriver())
     monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(lease))
     monkeypatch.setattr(
         reason,

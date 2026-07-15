@@ -14,6 +14,8 @@ TaskType = Literal["reason", "explore", "bootstrap"]
 WorkerType = Literal["claudecode", "codex", "pi", "mock"]
 CompletedAction = Literal["remove", "stop"]
 WorkerHealthcheckMode = Literal["startup_and_task", "startup_only", "disabled"]
+ExecutionMode = Literal["container", "local"]
+LocalCompletedAction = Literal["keep", "remove"]
 
 WORKER_ENV_KEYS: dict[WorkerType, tuple[str, ...]] = {
     "claudecode": (
@@ -155,6 +157,11 @@ class ContainerConfig(BaseModel):
     cap_add: list[str] = Field(default_factory=list)
 
 
+class LocalConfig(BaseModel):
+    workspace_root: str | None = None
+    completed_action: LocalCompletedAction = "keep"
+
+
 class RuntimeConfig(BaseModel):
     max_workers: int = Field(gt=0)
     max_running_projects: int = Field(gt=0)
@@ -162,6 +169,7 @@ class RuntimeConfig(BaseModel):
     interval: int = Field(gt=0)
     healthcheck_timeout: int = Field(gt=0)
     worker_healthcheck: WorkerHealthcheckMode = "startup_only"
+    execution: ExecutionMode = "container"
     prompt_group: str = Field(min_length=1)
 
 
@@ -186,10 +194,9 @@ class WorkerConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_env(self) -> "WorkerConfig":
-        required = WORKER_ENV_KEYS[self.type]
-        missing = [key for key in required if not self.env.get(key)]
-        if missing:
-            raise ValueError(f"worker {self.name} missing env keys: {', '.join(missing)}")
+        # Required LLM env keys (base_url / key / model) are enforced per execution mode by
+        # DispatchConfig: container mode needs them, local mode reuses the host CLI config.
+        # The checks below are mode-independent and always apply.
         if self.type == "pi":
             _validate_optional_positive_int_env(self.name, self.env, "PI_MODEL_CONTEXT_WINDOW")
         if self.type == "mock":
@@ -203,7 +210,8 @@ class DispatchConfig(BaseModel):
     server: str
     runtime: RuntimeConfig
     tasks: TasksConfig
-    container: ContainerConfig
+    container: ContainerConfig | None = None
+    local: LocalConfig | None = None
     common_env: dict[str, str] = Field(default_factory=dict)
     workers: list[WorkerConfig]
 
@@ -246,6 +254,21 @@ class DispatchConfig(BaseModel):
             raise ValueError("workers must not be empty")
         if self.runtime.max_project_workers > self.runtime.max_workers:
             raise ValueError("max_project_workers cannot exceed max_workers")
+        return self
+
+    @model_validator(mode="after")
+    def validate_execution_mode(self) -> "DispatchConfig":
+        if self.runtime.execution == "container":
+            if self.container is None:
+                raise ValueError("container config is required when runtime.execution is container")
+            for worker in self.workers:
+                required = WORKER_ENV_KEYS[worker.type]
+                missing = [key for key in required if not worker.env.get(key)]
+                if missing:
+                    raise ValueError(f"worker {worker.name} missing env keys: {', '.join(missing)}")
+        else:  # local: workers reuse the host CLI config, so no LLM env keys are required
+            if self.local is None:
+                self.local = LocalConfig()
         return self
 
     @classmethod

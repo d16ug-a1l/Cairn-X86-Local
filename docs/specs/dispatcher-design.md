@@ -165,6 +165,7 @@ Dispatcher 使用一个运行期配置文件：
 - 使用者只需要提供 `dispatch.yaml`
 - 任务 prompt 以 markdown 文件形式随代码分发，并通过 `runtime.prompt_group` 选择目录
 - Worker 的健康检查、命令模板、session 处理、二阶段收尾能力由对应 driver 实现
+- `runtime.execution` 选择执行后端：默认 `container`（每项目一个容器），或 `local`（worker 直接在 dispatcher 宿主机上以子进程运行，复用本机已配置好的 CLI，无需 Docker 与 API key）
 
 代码目录可以采用类似组织：
 
@@ -874,9 +875,12 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 | `runtime.interval` | 是 | 统一节拍配置；既是 Dispatcher 主循环间隔，也是带 claim 任务的 heartbeat 周期 |
 | `runtime.healthcheck_timeout` | 是 | Worker 健康检查的统一外层 watchdog 超时 |
 | `runtime.worker_healthcheck` | 否 | Worker 健康检查模式：`startup_and_task`、`startup_only` 或 `disabled`；默认 `startup_only` |
+| `runtime.execution` | 否 | 执行后端：`container`（默认）或 `local`；`local` 时 worker 在 dispatcher 宿主机上以子进程运行，复用本机 CLI，启动时校验各 CLI 是否已安装可用 |
 | `runtime.prompt_group` | 是 | 当前使用的 prompt 组目录名 |
 
 ### `container.*`
+
+仅 `runtime.execution: container`（默认）时必填。
 
 | 字段 | 必填 | 含义 |
 | --- | --- | --- |
@@ -893,6 +897,15 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 
 - completed project 的容器 cleanup 可以异步并行进行，不要求阻塞主调度循环
 - 如果项目已从 Server 删除，Dispatcher 会把找不到对应项目的 `cairn-dispatch-*` 容器视为 orphan，并执行 stop 清理
+
+### `local.*`
+
+仅 `runtime.execution: local` 时生效，`container` 模式下忽略。此时无需 `container.*`，worker 也不需要任何 LLM 环境变量；启动时 Dispatcher 会对每个已配置 worker 的 CLI 执行 `--help` 探测，全部缺失则报错退出。
+
+| 字段 | 必填 | 含义 |
+| --- | --- | --- |
+| `local.workspace_root` | 否 | 每项目工作目录的根；不填则取 dispatcher 启动时的当前目录，每项目分到隔离子目录 `<root>/<project_id>/` 作为 worker 进程的工作目录 |
+| `local.completed_action` | 否 | 项目 completed 后对工作目录的处理：`keep`（默认，保留现场）或 `remove` |
 
 ### `tasks.*`
 
