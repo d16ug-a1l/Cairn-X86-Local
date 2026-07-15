@@ -202,6 +202,8 @@ def _config(
     reason: str,
     explore: str,
     task_types: list[str] | None = None,
+    worker_healthcheck: str = "startup_only",
+    healthcheck: str | None = None,
 ) -> DispatchConfig:
     return DispatchConfig.model_validate(
         {
@@ -212,6 +214,7 @@ def _config(
                 "max_running_projects": 1,
                 "max_project_workers": 1,
                 "healthcheck_timeout": 2,
+                "worker_healthcheck": worker_healthcheck,
                 "prompt_group": "mock",
             },
             "tasks": {
@@ -232,7 +235,7 @@ def _config(
                     "max_running": 1,
                     "priority": 0,
                     "env": {
-                        "MOCK_HEALTHCHECK": _phase("ok"),
+                        "MOCK_HEALTHCHECK": healthcheck or _phase("ok"),
                         "MOCK_BOOTSTRAP": bootstrap,
                         "MOCK_REASON": reason,
                         "MOCK_EXPLORE_EXECUTE": explore,
@@ -376,3 +379,120 @@ def test_mock_scheduler_enabled_project_skips_bootstrap_when_worker_does_not_sup
     assert [(intent.description, intent.to) for intent in project.intents] == [
         ("mock complete from origin", "goal")
     ]
+
+
+def test_task_healthcheck_healthy_worker_completes_end_to_end(http_client: TestClient) -> None:
+    client = InProcessClient(http_client)
+    containers = LocalContainerManager()
+    loop = _loop(
+        _config(
+            bootstrap=_phase("complete"),
+            reason=_phase("complete", zero_outcomes=["intent"]),
+            explore=_phase("fact"),
+            worker_healthcheck="startup_and_task",
+        ),
+        client,
+        containers,
+    )
+    project_id = _create_project(http_client)
+
+    try:
+        _dispatch_and_wait(loop)
+        project = client.get_project(project_id)
+    finally:
+        loop.close()
+
+    # code-based check_health runs before the task, passes, and the bootstrap completes
+    assert project.project.status == "completed"
+
+
+def test_task_healthcheck_failure_aborts_task_and_cools_down_worker(http_client: TestClient) -> None:
+    client = InProcessClient(http_client)
+    containers = LocalContainerManager()
+    loop = _loop(
+        _config(
+            bootstrap=_phase("complete"),
+            reason=_phase("complete", zero_outcomes=["intent"]),
+            explore=_phase("fact"),
+            worker_healthcheck="startup_and_task",
+            healthcheck=_phase("fail", zero_outcomes=["ok"]),
+        ),
+        client,
+        containers,
+    )
+    project_id = _create_project(http_client)
+
+    try:
+        _dispatch_and_wait(loop)
+        project = client.get_project(project_id)
+    finally:
+        loop.close()
+
+    # unhealthy worker -> task aborted before execution, no facts written, worker put on cooldown
+    assert project.project.status == "active"
+    assert [fact.id for fact in project.facts] == ["origin", "goal"]
+    assert "mock-worker" in loop.worker_unhealthy_until
+
+
+def _failover_config() -> DispatchConfig:
+    def worker(name: str, priority: int, healthcheck: str) -> dict:
+        return {
+            "name": name,
+            "type": "mock",
+            "task_types": ["bootstrap", "reason", "explore"],
+            "max_running": 1,
+            "priority": priority,
+            "env": {
+                "MOCK_HEALTHCHECK": healthcheck,
+                "MOCK_BOOTSTRAP": _phase("complete"),
+                "MOCK_REASON": _phase("complete", zero_outcomes=["intent"]),
+                "MOCK_EXPLORE_EXECUTE": _phase("fact"),
+            },
+        }
+
+    return DispatchConfig.model_validate(
+        {
+            "server": "in-process",
+            "runtime": {
+                "interval": 1,
+                "max_workers": 1,
+                "max_running_projects": 1,
+                "max_project_workers": 1,
+                "healthcheck_timeout": 2,
+                "worker_healthcheck": "startup_and_task",
+                "prompt_group": "mock",
+            },
+            "tasks": {
+                "bootstrap": {"timeout": 2, "conclude_timeout": 2},
+                "reason": {"timeout": 2, "max_intents": 1},
+                "explore": {"timeout": 2, "conclude_timeout": 2},
+            },
+            "container": {"image": "unused", "network_mode": "host", "completed_action": "stop"},
+            "workers": [
+                worker("bad", 0, _phase("fail", zero_outcomes=["ok"])),
+                worker("good", 1, _phase("ok")),
+            ],
+        }
+    )
+
+
+def test_unhealthy_worker_fails_over_to_healthy_worker(http_client: TestClient) -> None:
+    client = InProcessClient(http_client)
+    containers = LocalContainerManager()
+    loop = _loop(_failover_config(), client, containers)
+    project_id = _create_project(http_client)
+
+    try:
+        # round 1: 'bad' (priority 0) is chosen first, its health check fails -> cooldown
+        _dispatch_and_wait(loop)
+        assert "bad" in loop.worker_unhealthy_until
+        assert client.get_project(project_id).project.status == "active"
+
+        # round 2: 'bad' still cooling down -> 'good' takes over and completes the project
+        _dispatch_and_wait(loop)
+        project = client.get_project(project_id)
+    finally:
+        loop.close()
+
+    assert project.project.status == "completed"
+    assert any(intent.worker == "good" for intent in project.intents)

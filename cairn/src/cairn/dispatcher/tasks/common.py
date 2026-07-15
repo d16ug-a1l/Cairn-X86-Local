@@ -12,17 +12,10 @@ from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
 from cairn.dispatcher.runtime.process import ProcessResult
 
-HEALTHCHECK_COMMUNICATE_GRACE_SECONDS = 10
 PROCESS_COMMUNICATE_GRACE_SECONDS = 15
 LOG_PREVIEW_LIMIT = 1200
 GRAPH_SNAPSHOT_ROOT = "/tmp/cairn-prompts"
 LOG = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class HealthcheckRun:
-    result: ProcessResult
-    duration_ms: int
 
 
 @dataclass(slots=True)
@@ -75,39 +68,6 @@ def write_graph_snapshot_reference(
         "Before using the graph, read the entire file and treat its contents as the YAML snapshot "
         "for this Graph section."
     )
-
-
-def run_healthcheck(
-    container_manager: ContainerManager,
-    container_name: str,
-    worker: WorkerConfig,
-    command: list[str],
-    *,
-    timeout_seconds: int,
-    lease: HeartbeatLease | None = None,
-    cancellation: TaskCancellation | None = None,
-) -> HealthcheckRun:
-    process = container_manager.build_exec_process(
-        container_name,
-        dict(worker.env),
-        command,
-        timeout_seconds=timeout_seconds,
-    )
-    process.start()
-    if lease is not None:
-        lease.attach_process(process)
-    if cancellation is not None:
-        cancellation.attach_process(process)
-    started = time.perf_counter()
-    try:
-        result = process.communicate(timeout=communicate_timeout(timeout_seconds, HEALTHCHECK_COMMUNICATE_GRACE_SECONDS))
-    finally:
-        if lease is not None:
-            lease.attach_process(None)
-        if cancellation is not None:
-            cancellation.attach_process(None)
-    duration_ms = int((time.perf_counter() - started) * 1000)
-    return HealthcheckRun(result=result, duration_ms=duration_ms)
 
 
 def run_worker_process(

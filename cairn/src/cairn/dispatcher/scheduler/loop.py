@@ -929,7 +929,7 @@ class DispatcherLoop:
             )
 
     def _run_startup_healthchecks(self, *, show_commands: bool) -> None:
-        results = run_startup_healthchecks(self.config, self.container_manager, show_commands=show_commands)
+        results = run_startup_healthchecks(self.config, show_commands=show_commands)
         if any(result.ok for result in results):
             return
         raise RuntimeError(format_failure_summary(results))

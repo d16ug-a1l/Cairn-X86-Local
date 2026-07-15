@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import random
 
 from cairn.dispatcher.config import WorkerConfig, resolve_mock_behavior
 from cairn.dispatcher.workers.base import DriverResult, SeedSessionDriver
+from cairn.dispatcher.workers.health import HealthResult
 
 _SCRIPT = """
 import json,random,sys,time
@@ -131,8 +133,13 @@ class MockDriver(SeedSessionDriver):
         behavior = resolve_mock_behavior(worker.name, worker.env)
         return ["python3", "-c", _SCRIPT, json.dumps(behavior, ensure_ascii=False), prompt]
 
-    def build_healthcheck(self, worker: WorkerConfig) -> list[str]:
-        return self._argv(worker, '{"phase":"healthcheck"}')
+    def check_health(self, worker: WorkerConfig, *, timeout: float) -> HealthResult:
+        outcomes = resolve_mock_behavior(worker.name, worker.env)["healthcheck"]["outcomes"]
+        ok = random.random() < outcomes.get("ok", 0.0)
+        return HealthResult(ok=ok, status=200 if ok else 503, detail="" if ok else "mock healthcheck fail")
+
+    def describe_health(self, worker: WorkerConfig) -> str:
+        return "mock in-process healthcheck"
 
     def build_execute(self, worker: WorkerConfig, prompt: str, session: str | None) -> DriverResult:
         return DriverResult(argv=self._argv(worker, prompt), session=session)

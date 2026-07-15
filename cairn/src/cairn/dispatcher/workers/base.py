@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import abc
 import re
-import shlex
 import uuid
 from dataclasses import dataclass
 
 from cairn.dispatcher.config import WorkerConfig
+from cairn.dispatcher.workers.health import HealthResult
 
 
 @dataclass(slots=True)
@@ -31,15 +31,13 @@ class WorkerDriver(abc.ABC):
     def prepare_session(self) -> str | None:
         return None
 
-    def build_startup_healthcheck(self, worker: WorkerConfig) -> list[str]:
-        return self.build_healthcheck(worker)
-
-    def describe_startup_healthcheck(self, worker: WorkerConfig) -> str:
-        return shlex.join(self.build_startup_healthcheck(worker))
-
     @abc.abstractmethod
-    def build_healthcheck(self, worker: WorkerConfig) -> list[str]:
+    def check_health(self, worker: WorkerConfig, *, timeout: float) -> HealthResult:
+        """Verify this worker's LLM config is usable, in-process (no container, no curl)."""
         raise NotImplementedError
+
+    def describe_health(self, worker: WorkerConfig) -> str:
+        return "in-process API ping"
 
     @abc.abstractmethod
     def build_execute(self, worker: WorkerConfig, prompt: str, session: str | None) -> DriverResult:

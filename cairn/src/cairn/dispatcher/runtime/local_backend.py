@@ -62,12 +62,6 @@ class LocalBackend:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
-    def create_startup_container(self) -> str:
-        raise RuntimeError("startup healthcheck container is not used in local execution mode")
-
-    def remove_container(self, name: str, *, force: bool = True) -> None:
-        return None
-
     def needs_completed_cleanup(self, project_id: str) -> bool:
         return self._config.completed_action == "remove" and self._project_dir(project_id).exists()
 
