@@ -12,6 +12,9 @@
   <a href="https://zc.tencent.com/hackathon" target="_blank" rel="noopener noreferrer">
     <img src="./README/tch.png" alt="TCH" height="55" />
   </a>
+  <a href="https://wiki.chainreactors.red" target="_blank" rel="noopener noreferrer">
+    <img src="./README/c.png" alt="ChainReactors" height="45" />
+  </a>
 </p>
 
 Cairn is a general-purpose problem-solving engine. <br/>It defines no roles, no workflows. Given an origin and a goal, it searches for a path through an unknown state space. <br/>AI Penetration Testing is one such problem — and a proven one.
