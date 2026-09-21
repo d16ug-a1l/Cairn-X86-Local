@@ -10,32 +10,9 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-TaskType = Literal["reason", "explore", "bootstrap"]
+TaskType = Literal["reason", "explore", "bootstrap", "writeup"]
 WorkerType = Literal["claudecode", "codex", "pi", "mock"]
-CompletedAction = Literal["remove", "stop"]
-WorkerHealthcheckMode = Literal["startup_and_task", "startup_only", "disabled"]
-ExecutionMode = Literal["container", "local"]
 LocalCompletedAction = Literal["keep", "remove"]
-
-WORKER_ENV_KEYS: dict[WorkerType, tuple[str, ...]] = {
-    "claudecode": (
-        "ANTHROPIC_MODEL",
-        "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_AUTH_TOKEN",
-    ),
-    "codex": (
-        "CODEX_MODEL",
-        "CODEX_BASE_URL",
-        "OPENAI_API_KEY",
-    ),
-    "pi": (
-        "PI_MODEL",
-        "PI_BASE_URL",
-        "PI_API_KEY",
-        "PI_PROVIDER_API",
-    ),
-    "mock": (),
-}
 
 DEFAULT_PROMPT_REQUIRED_TOKENS: dict[str, tuple[str, ...]] = {
     "reason.md": ("{graph_yaml}", "{fact_ids}", "{open_intents}", "{max_intents}"),
@@ -43,6 +20,7 @@ DEFAULT_PROMPT_REQUIRED_TOKENS: dict[str, tuple[str, ...]] = {
     "explore_conclude.md": ("{graph_yaml}", "{intent_id}", "{intent_description}"),
     "bootstrap.md": ("{origin}", "{goal}", "{hints}"),
     "bootstrap_conclude.md": ("{origin}", "{goal}", "{hints}"),
+    "writeup.md": ("{project_title}", "{origin}", "{goal}", "{main_chain}", "{execution_details}"),
 }
 
 PROMPT_REQUIRED_TOKENS_BY_GROUP: dict[str, dict[str, tuple[str, ...]]] = {
@@ -52,23 +30,20 @@ PROMPT_REQUIRED_TOKENS_BY_GROUP: dict[str, dict[str, tuple[str, ...]]] = {
         "explore_conclude.md": ("{intent_id}",),
         "bootstrap.md": ("{origin}", "{goal}", "{hints}"),
         "bootstrap_conclude.md": ("{origin}", "{goal}", "{hints}"),
+        "writeup.md": ("{origin}", "{goal}"),
     }
 }
 
 MOCK_ALLOWED_OUTCOMES: dict[str, frozenset[str]] = {
-    "healthcheck": frozenset({"ok", "fail"}),
     "reason": frozenset({"complete", "intent", "noop", "rejected", "invalid_json", "invalid_payload", "command_fail"}),
     "explore_execute": frozenset({"fact", "rejected", "invalid_json", "invalid_payload", "command_fail"}),
     "explore_conclude": frozenset({"fact", "rejected", "invalid_json", "invalid_payload", "command_fail"}),
     "bootstrap": frozenset({"complete", "fact", "rejected", "invalid_json", "invalid_payload", "command_fail"}),
     "bootstrap_conclude": frozenset({"fact", "rejected", "invalid_json", "invalid_payload", "command_fail"}),
+    "writeup": frozenset({"writeup", "rejected", "invalid_json", "invalid_payload", "command_fail"}),
 }
 
 MOCK_DEFAULT_BEHAVIOR: dict[str, dict[str, Any]] = {
-    "healthcheck": {
-        "delay": [0.05, 0.15],
-        "outcomes": {"ok": "1.0", "fail": "0.0"},
-    },
     "reason": {
         "delay": [0.05, 0.3],
         "outcomes": {
@@ -122,6 +97,16 @@ MOCK_DEFAULT_BEHAVIOR: dict[str, dict[str, Any]] = {
             "command_fail": "0.0",
         },
     },
+    "writeup": {
+        "delay": [0.05, 0.3],
+        "outcomes": {
+            "writeup": "1.0",
+            "rejected": "0.0",
+            "invalid_json": "0.0",
+            "invalid_payload": "0.0",
+            "command_fail": "0.0",
+        },
+    },
 }
 
 MOCK_ALLOWED_ENV_KEYS = frozenset(
@@ -144,17 +129,15 @@ class BootstrapTaskConfig(BaseModel):
     conclude_timeout: int = Field(gt=0)
 
 
+class WriteupTaskConfig(BaseModel):
+    timeout: int = Field(gt=0)
+
+
 class TasksConfig(BaseModel):
     bootstrap: BootstrapTaskConfig
     reason: ReasonTaskConfig
     explore: ExploreTaskConfig
-
-
-class ContainerConfig(BaseModel):
-    image: str
-    network_mode: str
-    completed_action: CompletedAction
-    cap_add: list[str] = Field(default_factory=list)
+    writeup: WriteupTaskConfig = Field(default_factory=lambda: WriteupTaskConfig(timeout=900))
 
 
 class LocalConfig(BaseModel):
@@ -167,10 +150,8 @@ class RuntimeConfig(BaseModel):
     max_running_projects: int = Field(gt=0)
     max_project_workers: int = Field(gt=0)
     interval: int = Field(gt=0)
-    healthcheck_timeout: int = Field(gt=0)
-    worker_healthcheck: WorkerHealthcheckMode = "startup_only"
-    execution: ExecutionMode = "container"
     prompt_group: str = Field(min_length=1)
+    writeup_enabled: bool = True
 
 
 class WorkerConfig(BaseModel):
@@ -194,11 +175,7 @@ class WorkerConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_env(self) -> "WorkerConfig":
-        # Required LLM env keys (base_url / key / model) are enforced per execution mode by
-        # DispatchConfig: container mode needs them, local mode reuses the host CLI config.
-        # The checks below are mode-independent and always apply.
-        if self.type == "pi":
-            _validate_optional_positive_int_env(self.name, self.env, "PI_MODEL_CONTEXT_WINDOW")
+        # Workers reuse the host CLI config (no API keys required).
         if self.type == "mock":
             resolve_mock_behavior(self.name, self.env)
         return self
@@ -210,10 +187,16 @@ class DispatchConfig(BaseModel):
     server: str
     runtime: RuntimeConfig
     tasks: TasksConfig
-    container: ContainerConfig | None = None
     local: LocalConfig | None = None
     common_env: dict[str, str] = Field(default_factory=dict)
     workers: list[WorkerConfig]
+    active_worker: str | None = None
+
+    def eligible_workers(self) -> list[WorkerConfig]:
+        """Workers allowed to receive new tasks. When active_worker is set, only it is eligible."""
+        if self.active_worker is None:
+            return list(self.workers)
+        return [worker for worker in self.workers if worker.name == self.active_worker]
 
     @model_validator(mode="before")
     @classmethod
@@ -252,23 +235,16 @@ class DispatchConfig(BaseModel):
             raise ValueError("worker names must be unique")
         if not self.workers:
             raise ValueError("workers must not be empty")
+        if self.active_worker is not None and self.active_worker not in names:
+            raise ValueError(f"active_worker {self.active_worker} is not a configured worker")
         if self.runtime.max_project_workers > self.runtime.max_workers:
             raise ValueError("max_project_workers cannot exceed max_workers")
         return self
 
     @model_validator(mode="after")
     def validate_execution_mode(self) -> "DispatchConfig":
-        if self.runtime.execution == "container":
-            if self.container is None:
-                raise ValueError("container config is required when runtime.execution is container")
-            for worker in self.workers:
-                required = WORKER_ENV_KEYS[worker.type]
-                missing = [key for key in required if not worker.env.get(key)]
-                if missing:
-                    raise ValueError(f"worker {worker.name} missing env keys: {', '.join(missing)}")
-        else:  # local: workers reuse the host CLI config, so no LLM env keys are required
-            if self.local is None:
-                self.local = LocalConfig()
+        if self.local is None:
+            self.local = LocalConfig()
         return self
 
     @classmethod
@@ -277,18 +253,6 @@ class DispatchConfig(BaseModel):
         config = cls.model_validate(data)
         validate_prompt_resources(config.runtime.prompt_group)
         return config
-
-
-def _validate_optional_positive_int_env(worker_name: str, env: dict[str, str], key: str) -> None:
-    value = env.get(key)
-    if value is None or not value.strip():
-        return
-    try:
-        parsed = int(value)
-    except ValueError as exc:
-        raise ValueError(f"worker {worker_name} env {key} must be an integer") from exc
-    if parsed <= 0:
-        raise ValueError(f"worker {worker_name} env {key} must be greater than 0")
 
 
 def validate_prompt_resources(prompt_group: str) -> None:

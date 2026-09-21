@@ -11,8 +11,8 @@ from cairn.dispatcher.contracts import (
 )
 from cairn.dispatcher.prompting import format_hints, load_prompt, render_prompt
 from cairn.dispatcher.protocol.client import CairnClient
+from cairn.dispatcher.runtime.backend import ExecutionBackend
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
-from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
 from cairn.dispatcher.tasks.common import (
     best_effort_release,
@@ -21,7 +21,6 @@ from cairn.dispatcher.tasks.common import (
     project_allows_conclude_fallback,
     preview,
     run_worker_process,
-    task_healthcheck_enabled,
     write_conclude_result,
     write_conclude_result_with_fact_id,
 )
@@ -34,60 +33,18 @@ LOG = logging.getLogger(__name__)
 def run_bootstrap_task(
     config: DispatchConfig,
     client: CairnClient,
-    container_manager: ContainerManager,
+    backend: ExecutionBackend,
     project: ProjectDetail,
     intent: Intent,
     worker: WorkerConfig,
     cancellation: TaskCancellation,
 ) -> str:
-    driver = get_driver(worker.type, config.runtime.execution)
+    driver = get_driver(worker.type)
     task_started = time.perf_counter()
-    healthcheck_timeout = config.runtime.healthcheck_timeout
     lease = HeartbeatLease.for_intent(client, project.project.id, intent.id, worker.name, config.runtime.interval)
     lease.start()
     try:
-        container_name = container_manager.ensure_running(project.project.id)
-
-        if task_healthcheck_enabled(config):
-            LOG.info(
-                "checking worker health project=%s intent=%s worker=%s timeout=%ss",
-                project.project.id,
-                intent.id,
-                worker.name,
-                healthcheck_timeout,
-            )
-            health = driver.check_health(worker, timeout=healthcheck_timeout)
-            if cancellation.is_cancelled:
-                LOG.info(
-                    "bootstrap cancelled during healthcheck project=%s intent=%s worker=%s reason=%s",
-                    project.project.id,
-                    intent.id,
-                    worker.name,
-                    cancellation.reason,
-                )
-                best_effort_release(client, project.project.id, intent.id, worker.name)
-                return "cancelled"
-            if lease.failure is not None:
-                LOG.warning(
-                    "heartbeat lost during bootstrap healthcheck project=%s intent=%s worker=%s status=%s",
-                    project.project.id,
-                    intent.id,
-                    worker.name,
-                    lease.failure.status_code,
-                )
-                best_effort_release(client, project.project.id, intent.id, worker.name)
-                return "failed"
-            if not health.ok:
-                LOG.warning(
-                    "worker unhealthy project=%s intent=%s worker=%s status=%s detail=%s",
-                    project.project.id,
-                    intent.id,
-                    worker.name,
-                    health.status,
-                    health.detail,
-                )
-                best_effort_release(client, project.project.id, intent.id, worker.name)
-                return "unhealthy"
+        workspace = backend.ensure_running(project.project.id)
 
         prompt = render_prompt(
             load_prompt(config.runtime.prompt_group, "bootstrap.md"),
@@ -99,8 +56,8 @@ def run_bootstrap_task(
         session = execute.session
         execute_started = time.perf_counter()
         first = run_worker_process(
-            container_manager,
-            container_name,
+            backend,
+            workspace,
             worker,
             execute.argv,
             phase="bootstrap",
@@ -153,8 +110,8 @@ def run_bootstrap_task(
                 return _try_conclude_fallback(
                     config,
                     client,
-                    container_manager,
-                    container_name,
+                    backend,
+                    workspace,
                     worker,
                     driver,
                     project,
@@ -200,8 +157,8 @@ def run_bootstrap_task(
             return _try_conclude_fallback(
                 config,
                 client,
-                container_manager,
-                container_name,
+                backend,
+                workspace,
                 worker,
                 driver,
                 project,
@@ -234,8 +191,8 @@ def run_bootstrap_task(
 def _try_conclude_fallback(
     config: DispatchConfig,
     client: CairnClient,
-    container_manager: ContainerManager,
-    container_name: str,
+    backend: ExecutionBackend,
+    workspace: str,
     worker: WorkerConfig,
     driver,
     project: ProjectDetail,
@@ -284,7 +241,7 @@ def _try_conclude_fallback(
         best_effort_release(client, project.project.id, intent.id, worker.name)
         return "failed"
 
-    container_name = container_manager.ensure_running(project.project.id)
+    workspace = backend.ensure_running(project.project.id)
 
     prompt = render_prompt(
         load_prompt(config.runtime.prompt_group, "bootstrap_conclude.md"),
@@ -294,8 +251,8 @@ def _try_conclude_fallback(
     LOG.info("starting bootstrap conclude fallback project=%s intent=%s worker=%s", project.project.id, intent.id, worker.name)
     conclude_started = time.perf_counter()
     result = run_worker_process(
-        container_manager,
-        container_name,
+        backend,
+        workspace,
         worker,
         conclude_argv,
         phase="bootstrap_conclude",

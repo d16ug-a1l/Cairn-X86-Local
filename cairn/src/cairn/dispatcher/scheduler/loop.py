@@ -14,19 +14,18 @@ from cairn.dispatcher.config import DispatchConfig, LocalConfig, WorkerConfig
 from cairn.dispatcher.models import ReasonCheckpoint, RunningTask
 from cairn.dispatcher.protocol.client import CairnClient
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
-from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.local_backend import LocalBackend
-from cairn.dispatcher.runtime.startup_healthcheck import format_failure_summary, run_startup_healthchecks
 from cairn.dispatcher.scheduler.worker_select import choose_worker
 from cairn.dispatcher.workers.registry import get_driver
 from cairn.dispatcher.tasks.bootstrap import run_bootstrap_task
 from cairn.dispatcher.tasks.explore import run_explore_task
 from cairn.dispatcher.tasks.reason import run_reason_task
+from cairn.dispatcher.tasks.writeup import run_writeup_task
 from cairn.server.models import Intent, ProjectDetail, ProjectSummary
 
 LOG = logging.getLogger(__name__)
-UNHEALTHY_RETRY_AFTER_SECONDS = 5
 REJECTED_RETRY_AFTER_SECONDS = 5
+WRITEUP_RETRY_AFTER_SECONDS = 30
 BOOTSTRAP_INTENT_DESCRIPTION = "bootstrap"
 BOOTSTRAP_INTENT_CREATOR = "dispatcher.bootstrap"
 
@@ -35,7 +34,6 @@ BOOTSTRAP_INTENT_CREATOR = "dispatcher.bootstrap"
 class WorkerSelection:
     worker: WorkerConfig | None
     blocked_busy: list[str]
-    blocked_unhealthy: list[str]
     blocked_rejected: list[str]
     blocked_task_type: list[str]
 
@@ -45,25 +43,48 @@ class DispatcherLoop:
         self.config_path = config_path
         self.config = DispatchConfig.load(config_path)
         self.client = CairnClient(self.config.server)
-        if self.config.runtime.execution == "local":
-            self.container_manager = LocalBackend(self.config.local or LocalConfig())
-        else:
-            assert self.config.container is not None
-            self.container_manager = ContainerManager(self.config.container)
+        self.backend = LocalBackend(self.config.local or LocalConfig())
         self.executor = ThreadPoolExecutor(max_workers=self.config.runtime.max_workers)
         self.cleanup_executor = ThreadPoolExecutor(max_workers=max(1, min(8, self.config.runtime.max_workers)))
         self.futures: dict[Future[str], RunningTask] = {}
         self.cleanup_futures: dict[Future[bool], tuple[str, str | None, str | None]] = {}
         self.reason_checkpoints: dict[str, ReasonCheckpoint] = {}
         self.runtime_project_ids: set[str] = set()
-        self.worker_unhealthy_until: dict[str, float] = {}
         self.worker_rejected_until: dict[tuple[str, str, str], float] = {}
         self._log_state: dict[str, tuple[int, str, tuple[object, ...]]] = {}
         self._cleanup_pending: set[str] = set()
         self._inactive_cleanup_done: dict[str, str] = {}
+        self._writeup_done: set[str] = set()
+        self._writeup_retry_after: dict[str, float] = {}
         self.project_cursor = 0
         self._settings_checked = False
         self._startup_healthchecks_checked = False
+        try:
+            self._config_mtime = config_path.stat().st_mtime
+        except OSError:
+            self._config_mtime = 0.0
+
+    def _maybe_reload_config(self) -> None:
+        try:
+            mtime = self.config_path.stat().st_mtime
+        except OSError:
+            return
+        if mtime == self._config_mtime:
+            return
+        self._config_mtime = mtime
+        try:
+            config = DispatchConfig.load(self.config_path)
+        except Exception as exc:
+            LOG.warning("dispatch config reload failed, keeping previous config error=%s", exc)
+            return
+        LOG.info(
+            "dispatch config reloaded active_worker=%s workers=%s",
+            config.active_worker,
+            [worker.name for worker in config.workers],
+        )
+        if config.server != self.config.server:
+            LOG.warning("dispatch config reload: server URL change requires a dispatcher restart")
+        self.config = config
 
     def close(self) -> None:
         if self.futures:
@@ -74,7 +95,7 @@ class DispatcherLoop:
             )
         self.executor.shutdown(wait=True)
         self.cleanup_executor.shutdown(wait=True)
-        self.container_manager.close()
+        self.backend.close()
         self.client.close()
 
     def run(self, once: bool = False) -> None:
@@ -85,13 +106,15 @@ class DispatcherLoop:
                     if not self._settings_checked:
                         self._validate_server_settings()
                         self._settings_checked = True
+                    self._maybe_reload_config()
                     self._reap_futures()
                     self._reap_cleanup_futures()
                     summaries = self.client.list_projects()
                     self._initialize_reason_checkpoints(summaries)
                     self._refresh_runtime_projects(summaries)
                     self._cancel_inactive_tasks(summaries)
-                    self._queue_container_cleanups(summaries)
+                    self._dispatch_writeups(summaries)
+                    self._queue_workspace_cleanups(summaries)
                     self._dispatch_available(summaries)
                 except requests.RequestException as exc:
                     if once:
@@ -118,21 +141,13 @@ class DispatcherLoop:
     def run_startup_healthchecks(self, *, show_commands: bool = False, force: bool = False) -> None:
         if self._startup_healthchecks_checked:
             return
-        if self.config.runtime.execution == "local":
-            self._run_local_binary_check()
-            self._startup_healthchecks_checked = True
-            return
-        if not force and self.config.runtime.worker_healthcheck == "disabled":
-            LOG.info("skip startup worker healthchecks because runtime.worker_healthcheck=disabled")
-            self._startup_healthchecks_checked = True
-            return
-        self._run_startup_healthchecks(show_commands=show_commands)
+        self._run_local_binary_check()
         self._startup_healthchecks_checked = True
 
     def _run_local_binary_check(self) -> None:
         binaries: dict[str, list[str]] = {}
         for worker in self.config.workers:
-            binary = get_driver(worker.type, "local").local_binary()
+            binary = get_driver(worker.type).local_binary()
             if binary is None:
                 continue
             binaries.setdefault(binary, []).append(worker.name)
@@ -253,14 +268,14 @@ class DispatcherLoop:
 
     def _try_dispatch_project(self, summary: ProjectSummary) -> bool:
         skip_scope = f"project:{summary.id}:skip"
-        container_name = self.container_manager.container_name(summary.id)
-        if container_name in self._cleanup_pending:
+        workspace = self.backend.project_workspace(summary.id)
+        if workspace in self._cleanup_pending:
             self._log_changed(
                 f"{skip_scope}:cleanup_pending",
                 logging.DEBUG,
-                "skip project=%s because container cleanup is still pending container=%s",
+                "skip project=%s because workspace cleanup is still pending workspace=%s",
                 summary.id,
-                container_name,
+                workspace,
             )
             return False
         if self._project_running_task_count(summary.id) >= self.config.runtime.max_project_workers:
@@ -370,10 +385,9 @@ class DispatcherLoop:
             self._log_changed(
                 f"project:{project.project.id}:worker:reason",
                 logging.INFO,
-                "no worker available for reason project=%s blocked_busy=%s blocked_unhealthy=%s blocked_rejected=%s",
+                "no worker available for reason project=%s blocked_busy=%s blocked_rejected=%s",
                 project.project.id,
                 selection.blocked_busy,
-                selection.blocked_unhealthy,
                 selection.blocked_rejected,
             )
             return False
@@ -402,7 +416,7 @@ class DispatcherLoop:
                 run_reason_task,
                 self.config,
                 self.client,
-                self.container_manager,
+                self.backend,
                 project,
                 export_yaml,
                 worker,
@@ -434,11 +448,10 @@ class DispatcherLoop:
             self._log_changed(
                 f"project:{project.project.id}:worker:bootstrap",
                 logging.INFO,
-                "no worker available for bootstrap project=%s intent=%s blocked_busy=%s blocked_unhealthy=%s blocked_rejected=%s",
+                "no worker available for bootstrap project=%s intent=%s blocked_busy=%s blocked_rejected=%s",
                 project.project.id,
                 intent.id,
                 selection.blocked_busy,
-                selection.blocked_unhealthy,
                 selection.blocked_rejected,
             )
             return False
@@ -469,7 +482,7 @@ class DispatcherLoop:
                 run_bootstrap_task,
                 self.config,
                 self.client,
-                self.container_manager,
+                self.backend,
                 project,
                 intent,
                 worker,
@@ -492,11 +505,10 @@ class DispatcherLoop:
             self._log_changed(
                 f"project:{project.project.id}:worker:explore",
                 logging.INFO,
-                "no worker available for explore project=%s intent=%s blocked_busy=%s blocked_unhealthy=%s blocked_rejected=%s",
+                "no worker available for explore project=%s intent=%s blocked_busy=%s blocked_rejected=%s",
                 project.project.id,
                 intent.id,
                 selection.blocked_busy,
-                selection.blocked_unhealthy,
                 selection.blocked_rejected,
             )
             return False
@@ -527,7 +539,7 @@ class DispatcherLoop:
                 run_explore_task,
                 self.config,
                 self.client,
-                self.container_manager,
+                self.backend,
                 project,
                 export_yaml,
                 intent,
@@ -544,25 +556,91 @@ class DispatcherLoop:
         LOG.info("dispatched explore project=%s intent=%s worker=%s", project.project.id, intent.id, worker.name)
         return True
 
+    def _writeup_capable(self) -> bool:
+        return any("writeup" in worker.task_types for worker in self.config.eligible_workers())
+
+    def _dispatch_writeups(self, summaries: list[ProjectSummary]) -> None:
+        if not self.config.runtime.writeup_enabled:
+            return
+        if not self._writeup_capable():
+            return
+        now = time.time()
+        for summary in summaries:
+            if len(self.futures) >= self.config.runtime.max_workers:
+                return
+            if summary.status != "completed":
+                continue
+            if summary.id in self._writeup_done:
+                continue
+            if self._writeup_retry_after.get(summary.id, 0) > now:
+                continue
+            if self._project_running_task_count(summary.id) > 0:
+                continue
+            workspace = self.backend.project_workspace(summary.id)
+            if workspace in self._cleanup_pending:
+                continue
+            existing = self.client.get_writeup(summary.id)
+            if existing.ok:
+                self._writeup_done.add(summary.id)
+                LOG.info("writeup already exists project=%s", summary.id)
+                continue
+            if existing.status_code != 404:
+                self._log_changed(
+                    f"project:{summary.id}:writeup:query",
+                    logging.WARNING,
+                    "writeup query failed project=%s status=%s",
+                    summary.id,
+                    existing.status_code,
+                )
+                continue
+            project = self.client.get_project(summary.id)
+            if project.project.status != "completed":
+                continue
+            selection = self._select_worker(summary.id, "writeup")
+            worker = selection.worker
+            if worker is None:
+                self._log_changed(
+                    f"project:{summary.id}:worker:writeup",
+                    logging.INFO,
+                    "no worker available for writeup project=%s blocked_busy=%s blocked_rejected=%s blocked_task_type=%s",
+                    summary.id,
+                    selection.blocked_busy,
+                    selection.blocked_rejected,
+                    selection.blocked_task_type,
+                )
+                continue
+            self._clear_log_state(f"project:{summary.id}:worker:writeup")
+            try:
+                future = self.executor.submit(
+                    run_writeup_task,
+                    self.config,
+                    self.client,
+                    self.backend,
+                    project,
+                    worker,
+                    cancellation := TaskCancellation(),
+                )
+            except Exception:
+                LOG.exception("failed to submit writeup task project=%s worker=%s", summary.id, worker.name)
+                continue
+            self.futures[future] = RunningTask(summary.id, "writeup", worker.name, cancellation, intent_id=None)
+            self._clear_project_log_state(summary.id)
+            LOG.info("dispatched writeup project=%s worker=%s", summary.id, worker.name)
+
     def _select_worker(self, project_id: str, task_type: str) -> WorkerSelection:
         now = time.time()
         candidates: list[WorkerConfig] = []
         blocked_busy: list[str] = []
-        blocked_unhealthy: list[str] = []
         blocked_rejected: list[str] = []
         blocked_task_type: list[str] = []
         running_counts = self._worker_counts()
-        for worker in self.config.workers:
+        for worker in self.config.eligible_workers():
             if task_type not in worker.task_types:
                 blocked_task_type.append(worker.name)
                 continue
             running = running_counts.get(worker.name, 0)
             if running >= worker.max_running:
                 blocked_busy.append(f"{worker.name}({running}/{worker.max_running})")
-                continue
-            unhealthy_until = self.worker_unhealthy_until.get(worker.name, 0)
-            if unhealthy_until > now:
-                blocked_unhealthy.append(f"{worker.name}({unhealthy_until - now:.1f}s)")
                 continue
             rejected_until = self.worker_rejected_until.get((project_id, task_type, worker.name), 0)
             if rejected_until > now:
@@ -571,29 +649,26 @@ class DispatcherLoop:
             candidates.append(worker)
         if not candidates:
             LOG.debug(
-                "worker selection project=%s task=%s no candidates blocked_busy=%s blocked_unhealthy=%s blocked_rejected=%s blocked_task_type=%s",
+                "worker selection project=%s task=%s no candidates blocked_busy=%s blocked_rejected=%s blocked_task_type=%s",
                 project_id,
                 task_type,
                 blocked_busy,
-                blocked_unhealthy,
                 blocked_rejected,
                 blocked_task_type,
             )
             return WorkerSelection(
                 worker=None,
                 blocked_busy=blocked_busy,
-                blocked_unhealthy=blocked_unhealthy,
                 blocked_rejected=blocked_rejected,
                 blocked_task_type=blocked_task_type,
             )
         ordered = choose_worker(candidates, running_counts)
         LOG.debug(
-            "worker selection project=%s task=%s candidates=%s blocked_busy=%s blocked_unhealthy=%s blocked_rejected=%s blocked_task_type=%s chosen=%s",
+            "worker selection project=%s task=%s candidates=%s blocked_busy=%s blocked_rejected=%s blocked_task_type=%s chosen=%s",
             project_id,
             task_type,
             [f"{worker.name}({running_counts.get(worker.name, 0)}/{worker.max_running},p{worker.priority})" for worker in candidates],
             blocked_busy,
-            blocked_unhealthy,
             blocked_rejected,
             blocked_task_type,
             ordered[0].name if ordered else None,
@@ -601,7 +676,6 @@ class DispatcherLoop:
         return WorkerSelection(
             worker=ordered[0] if ordered else None,
             blocked_busy=blocked_busy,
-            blocked_unhealthy=blocked_unhealthy,
             blocked_rejected=blocked_rejected,
             blocked_task_type=blocked_task_type,
         )
@@ -674,7 +748,7 @@ class DispatcherLoop:
             return False
         if self._get_bootstrap_intent(project) is not None:
             return True
-        return any("bootstrap" in worker.task_types for worker in self.config.workers)
+        return any("bootstrap" in worker.task_types for worker in self.config.eligible_workers())
 
     def _create_bootstrap_intent(self, project_id: str) -> Intent | None:
         response = self.client.create_intent(
@@ -739,16 +813,6 @@ class DispatcherLoop:
                         outcome,
                     )
                 self._clear_project_log_state(task.project_id)
-                if outcome == "unhealthy":
-                    retry_after_seconds = UNHEALTHY_RETRY_AFTER_SECONDS
-                    self.worker_unhealthy_until[task.worker_name] = time.time() + retry_after_seconds
-                    LOG.info(
-                        "worker marked unhealthy worker=%s retry_after=%.0fs",
-                        task.worker_name,
-                        retry_after_seconds,
-                    )
-                else:
-                    self.worker_unhealthy_until.pop(task.worker_name, None)
                 rejection_key = (task.project_id, task.task_type, task.worker_name)
                 if outcome == "rejected":
                     retry_after_seconds = REJECTED_RETRY_AFTER_SECONDS
@@ -762,6 +826,17 @@ class DispatcherLoop:
                     )
                 else:
                     self.worker_rejected_until.pop(rejection_key, None)
+                if outcome == "success" and task.task_type == "writeup":
+                    self._writeup_done.add(task.project_id)
+                elif outcome not in ("success", "cancelled") and task.task_type == "writeup":
+                    self._writeup_retry_after[task.project_id] = time.time() + WRITEUP_RETRY_AFTER_SECONDS
+                    LOG.info(
+                        "writeup retry scheduled project=%s worker=%s outcome=%s retry_after=%.0fs",
+                        task.project_id,
+                        task.worker_name,
+                        outcome,
+                        WRITEUP_RETRY_AFTER_SECONDS,
+                    )
                 if outcome == "success" and task.task_type == "reason":
                     assert task.fact_count is not None
                     assert task.hint_count is not None
@@ -781,41 +856,47 @@ class DispatcherLoop:
             except Exception:
                 LOG.exception("task crashed project=%s task=%s worker=%s", task.project_id, task.task_type, task.worker_name)
 
-    def _cleanup_completed_containers(self, summaries: list[ProjectSummary]) -> None:
+    def _cleanup_completed_projects(self, summaries: list[ProjectSummary]) -> None:
         for summary in summaries:
             if summary.status != "completed":
                 continue
+            if (
+                self.config.runtime.writeup_enabled
+                and self._writeup_capable()
+                and summary.id not in self._writeup_done
+            ):
+                continue
             if self._inactive_cleanup_done.get(summary.id) == summary.status:
                 continue
-            container_name = self.container_manager.container_name(summary.id)
-            if container_name in self._cleanup_pending:
+            workspace = self.backend.project_workspace(summary.id)
+            if workspace in self._cleanup_pending:
                 continue
-            if not self.container_manager.needs_completed_cleanup(summary.id):
+            if not self.backend.needs_completed_cleanup(summary.id):
                 self._inactive_cleanup_done[summary.id] = summary.status
                 continue
-            future = self.cleanup_executor.submit(self.container_manager.cleanup_completed, summary.id)
-            self.cleanup_futures[future] = (container_name, summary.id, summary.status)
-            self._cleanup_pending.add(container_name)
+            future = self.cleanup_executor.submit(self.backend.cleanup_completed, summary.id)
+            self.cleanup_futures[future] = (workspace, summary.id, summary.status)
+            self._cleanup_pending.add(workspace)
 
-    def _cleanup_stopped_containers(self, summaries: list[ProjectSummary]) -> None:
+    def _cleanup_stopped_projects(self, summaries: list[ProjectSummary]) -> None:
         for summary in summaries:
             if summary.status != "stopped":
                 continue
             if self._inactive_cleanup_done.get(summary.id) == summary.status:
                 continue
-            container_name = self.container_manager.container_name(summary.id)
-            if container_name in self._cleanup_pending:
+            workspace = self.backend.project_workspace(summary.id)
+            if workspace in self._cleanup_pending:
                 continue
-            if not self.container_manager.needs_stopped_cleanup(summary.id):
+            if not self.backend.needs_stopped_cleanup(summary.id):
                 self._inactive_cleanup_done[summary.id] = summary.status
                 continue
-            future = self.cleanup_executor.submit(self.container_manager.cleanup_stopped, summary.id)
-            self.cleanup_futures[future] = (container_name, summary.id, summary.status)
-            self._cleanup_pending.add(container_name)
+            future = self.cleanup_executor.submit(self.backend.cleanup_stopped, summary.id)
+            self.cleanup_futures[future] = (workspace, summary.id, summary.status)
+            self._cleanup_pending.add(workspace)
 
-    def _queue_container_cleanups(self, summaries: list[ProjectSummary]) -> None:
-        self._cleanup_completed_containers(summaries)
-        self._cleanup_stopped_containers(summaries)
+    def _queue_workspace_cleanups(self, summaries: list[ProjectSummary]) -> None:
+        self._cleanup_completed_projects(summaries)
+        self._cleanup_stopped_projects(summaries)
 
     def _reap_cleanup_futures(self) -> None:
         done = [future for future in self.cleanup_futures if future.done()]
@@ -831,7 +912,7 @@ class DispatcherLoop:
             except Exception:
                 if project_id is not None:
                     self._inactive_cleanup_done.pop(project_id, None)
-                LOG.exception("container cleanup failed container=%s", name)
+                LOG.exception("workspace cleanup failed workspace=%s", name)
 
     def _refresh_runtime_projects(self, summaries: list[ProjectSummary]) -> None:
         active_ids = {summary.id for summary in summaries if summary.status == "active"}
@@ -841,12 +922,22 @@ class DispatcherLoop:
             current_status = inactive_status_by_id.get(project_id)
             if current_status != status:
                 self._inactive_cleanup_done.pop(project_id, None)
+        completed_ids = {summary.id for summary in summaries if summary.status == "completed"}
+        self._writeup_done.intersection_update(completed_ids)
+        for project_id in list(self._writeup_retry_after):
+            if project_id not in completed_ids:
+                self._writeup_retry_after.pop(project_id, None)
 
     def _cancel_inactive_tasks(self, summaries: list[ProjectSummary]) -> None:
         status_by_project = {summary.id: summary.status for summary in summaries}
         for task in self.futures.values():
             status = status_by_project.get(task.project_id, "deleted")
-            if status != "active" and task.cancellation.cancel(status):
+            if task.task_type == "writeup":
+                if status == "completed":
+                    continue
+            elif status == "active":
+                continue
+            if task.cancellation.cancel(status):
                 LOG.info(
                     "cancelling running task for inactive project project=%s task=%s worker=%s status=%s",
                     task.project_id,
@@ -928,8 +1019,3 @@ class DispatcherLoop:
                 interval,
             )
 
-    def _run_startup_healthchecks(self, *, show_commands: bool) -> None:
-        results = run_startup_healthchecks(self.config, show_commands=show_commands)
-        if any(result.ok for result in results):
-            return
-        raise RuntimeError(format_failure_summary(results))

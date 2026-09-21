@@ -172,6 +172,18 @@ intent_timeout  # 单位秒，超过此时间无心跳则 worker 清空为 null
 reason_timeout  # 单位秒，超过此时间无心跳则 Project.reason 清空为 null
 ```
 
+### Writeup
+
+```
+project_id      # 所属项目 id，主键
+content         # writeup 正文（Markdown）
+worker          # 生成本次 writeup 的消费者
+created_at      # 首次写入时间
+updated_at      # 最近一次覆盖写入时间
+```
+
+Writeup 是项目完成后的派生文档，不属于事实图，不参与因果推理。每个项目最多一份，重复写入为覆盖（upsert）。仅 `completed` 项目允许写入；项目被 `reopen` 回 `active` 时，已存储的 writeup 会被删除。
+
 ---
 
 ## 接口列表
@@ -325,7 +337,7 @@ Body：
 
 删除项目及其所有数据。
 
-如果某个 Dispatcher 仍持有该项目对应的运行容器，容器不由 Server 直接管理；Dispatcher 在后续轮询中发现项目已不存在后，会把该项目视为 `deleted`，取消本地仍在运行的任务，并删除对应的 orphan 容器。
+项目数据由 Server 直接删除；某个 Dispatcher 可能仍有该项目对应的本地任务与工作目录，这些不由 Server 管理。Dispatcher 在后续轮询中发现项目已不存在后，会把该项目视为 `deleted`，取消本地仍在运行的任务；项目工作目录的保留与否由 Dispatcher 侧配置决定。
 
 ---
 
@@ -359,7 +371,7 @@ Body：
 
 更新项目状态。仅允许 `active` 和 `stopped` 之间切换。`completed` 项目不可通过该接口再次变更状态；若需要撤销完成态，必须调用专用的 `reopen` 接口。该接口属于项目管理操作，不属于探索写操作。
 
-当项目切到 `stopped` 时，Server 会立即把所有尚无结论的 Intent 的 `worker` 清空为 `null`，并把 `project.reason` 清空，使这些 claim 立刻失效。这样项目恢复后可以马上重新认领，不必等待超时。`stopped` 的语义是硬停止：Server 负责拒绝后续探索写操作并清空 open intent claim / reason lease；消费者拿到这个信号后应立刻取消本地仍在运行的任务，并停止对应项目容器。
+当项目切到 `stopped` 时，Server 会立即把所有尚无结论的 Intent 的 `worker` 清空为 `null`，并把 `project.reason` 清空，使这些 claim 立刻失效。这样项目恢复后可以马上重新认领，不必等待超时。`stopped` 的语义是硬停止：Server 负责拒绝后续探索写操作并清空 open intent claim / reason lease；消费者拿到这个信号后应立刻取消本地仍在运行的任务，并停止对应项目的执行进程。
 
 已知问题：当前协议里，Intent 级只保存“当前 claim 持有者”这一份信息，也就是 `intent.worker`。因此项目一旦被切到 `stopped`，这些 open intent 的 `worker` 会被立即清空；停止后从项目详情里将无法直接看出“该 intent 在停止前最后是由哪个 worker 在推进”。后续可以考虑增加类似 `worker_history` 的 Intent 级历史字段来保留这部分可见性，但当前版本尚未实现。
 
@@ -577,6 +589,8 @@ Body：
 
 创建一条 `from` 指向所列 Facts、`to` 指向 `goal` 的已结论 Intent。完成声明无探索过程，服务端将 `creator` 和 `worker` 均设为请求中的 `worker` 值。Project 状态变为 `completed`，并立即清空当前 `project.reason`。
 
+项目进入 `completed` 后，消费者可以基于成功路径事实链生成解题 writeup，并通过 `PUT /projects/{project_id}/writeup` 存储（见「Writeups」一节）。
+
 如果后续外部验证发现这次完成判断有误，可再调用 `POST /projects/{project_id}/reopen` 撤销这条完成边，并把纠错信息写成新的 Fact 后继续探索。
 
 `from` 不能包含 `goal`。
@@ -607,6 +621,7 @@ Body：
 - 将 `creator` 和 `worker` 都写为请求中的 `creator`
 - 将项目状态改回 `active`
 - 清空当前 `project.reason`
+- 删除该项目已存储的 writeup（如有）
 
 这适合诸如“提交的 flag 是错的，需要继续寻找正确 flag”这类图外反馈。反馈本身被记成图中的新 Fact，而 `reopen` 只是触发这次改写的控制动作。
 
@@ -784,6 +799,59 @@ intents:
 #### GET /projects/{project_id}/export?format=timeline
 
 返回项目的时间线纯文本，按事件发生时间排序。YAML 快照展示图的结构拓扑，timeline 展示事件的先后顺序和因果链，两者互补。事件类型包括 `PROJECT CREATED`、`HINT`、`INTENT DECLARED`、`INTENT CONCLUDED`、`PROJECT COMPLETED`。若项目曾经完成后又被 `reopen`，由于旧的 `goal` 边已被撤销，timeline 中不会保留之前那次 `PROJECT COMPLETED` 事件。
+
+---
+
+#### GET /projects/{project_id}/export?format=report
+
+返回 Markdown 格式的任务报告（`text/markdown`）。服务端从 `origin` 出发沿已结论 Intent 做广度优先搜索：若存在到达 `goal` 的路径，则把这条路径渲染为「正确利用路径」，按步骤列出每次探索的描述、执行者、依据事实、时间与产出事实；不在主路径上的其他已结论探索列入附录。若项目尚未完成，则渲染「当前探索进展」，展示当前已确认的最深探索链。该格式为确定性生成，不经过任何模型。
+
+报告还会为每个步骤附上「执行过程」：agent CLI 会把每个任务会话的完整操作记录保存在 `~/.claude/projects/<工作目录转义名>/<session>.jsonl`，服务端解析这些 transcript，按 prompt 中的 intent 标记（explore 的 `## Current Intent`、bootstrap 的上下文标记）把会话关联到图上的步骤，提取该步骤中 agent 的操作叙述（assistant 文本）和实际执行的 Bash 命令（含命令自带的简短说明）。无法关联到具体步骤的会话（如 reason 会话）若包含命令，则列入「未关联到路径步骤的执行记录」附录。transcript 目录不存在时（如工作目录已清理）报告自动省略该部分。工作目录根与 claude 项目目录可分别通过环境变量 `CAIRN_REPORT_WORKSPACE_ROOT` 与 `CAIRN_CLAUDE_PROJECTS_DIR` 覆盖。
+
+---
+
+### Writeups
+
+Writeup 是项目完成后由消费者生成的解题过程文档，独立于事实图存储，每项目最多一份。仅 `completed` 项目允许写入；`reopen` 会删除已存储的 writeup，使项目回到可重新生成的状态。项目删除时 writeup 随项目级联删除。
+
+#### GET /projects/{project_id}/writeup
+
+返回该项目已存储的 writeup。项目不存在返回 `404`；项目尚无 writeup 返回 `404`。
+
+响应：
+
+```json
+{
+  "project_id": "proj_001",
+  "content": "# xx渗透测试 Writeup\n\n## 概述\n...",
+  "worker": "dispatcher-worker-A",
+  "created_at": "2026-03-21T18:10:00Z",
+  "updated_at": "2026-03-21T18:10:00Z"
+}
+```
+
+---
+
+#### PUT /projects/{project_id}/writeup
+
+写入或覆盖该项目的 writeup（upsert）。仅 `completed` 项目允许写入；`active` 或 `stopped` 项目返回 `409`；项目不存在返回 `404`。重复写入时 `content`、`worker` 和 `updated_at` 被覆盖，`created_at` 保留首次写入时间。
+
+Body：
+
+```json
+{
+  "content": "# xx渗透测试 Writeup\n\n## 概述\n...",
+  "worker": "dispatcher-worker-A"
+}
+```
+
+响应：写入后的 Writeup 对象。
+
+---
+
+#### DELETE /projects/{project_id}/writeup
+
+删除该项目已存储的 writeup，返回 `204`。项目不存在返回 `404`；项目尚无 writeup 返回 `404`。删除后消费者可重新生成并写入新的 writeup。
 
 ---
 

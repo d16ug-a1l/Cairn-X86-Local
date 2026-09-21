@@ -6,92 +6,19 @@ from typing import Any
 
 from cairn.dispatcher.config import WorkerConfig
 from cairn.dispatcher.workers.base import DriverResult, WorkerDriver
-from cairn.dispatcher.workers.health import HealthResult, http_ping, proxies_from_env
 
 
 class PiDriver(WorkerDriver):
     type_name = "pi"
 
-    def __init__(self, local: bool = False):
-        self.local = local
-
     def local_binary(self) -> str | None:
         return "pi"
 
-    def check_health(self, worker: WorkerConfig, *, timeout: float) -> HealthResult:
-        env = worker.env
-        base = env["PI_BASE_URL"].rstrip("/")
-        model = env["PI_MODEL"]
-        api = env["PI_PROVIDER_API"]
-        proxies = proxies_from_env(env)
-        headers = {"Authorization": f"Bearer {env['PI_API_KEY']}", "content-type": "application/json"}
-        if "anthropic" in api:
-            return http_ping(
-                f"{base}/v1/messages",
-                headers={**headers, "anthropic-version": "2023-06-01"},
-                json_body={"model": model, "max_tokens": 10, "messages": [{"role": "user", "content": "ping"}]},
-                timeout=timeout,
-                proxies=proxies,
-            )
-        if "responses" in api:
-            return http_ping(
-                f"{base}/responses",
-                headers=headers,
-                json_body={"model": model, "input": [{"role": "user", "content": "ping"}], "stream": False},
-                timeout=timeout,
-                proxies=proxies,
-            )
-        # openai-completions and anything else: OpenAI-compatible chat/completions
-        return http_ping(
-            f"{base}/chat/completions",
-            headers=headers,
-            json_body={"model": model, "max_tokens": 10, "messages": [{"role": "user", "content": "ping"}]},
-            timeout=timeout,
-            proxies=proxies,
-        )
-
-    def describe_health(self, worker: WorkerConfig) -> str:
-        env = worker.env
-        return f"POST {env['PI_BASE_URL']} (api={env['PI_PROVIDER_API']}, model={env['PI_MODEL']})"
-
     def build_execute(self, worker: WorkerConfig, prompt: str, session: str | None) -> DriverResult:
-        if self.local:
-            return DriverResult(argv=self._local_argv(worker, prompt, session), session=session)
-        env = worker.env
-        argv = [
-            "--provider",
-            "cairn",
-            "--model",
-            env["PI_MODEL"],
-            "--mode",
-            "json",
-            "--session-dir",
-            self._session_dir(worker),
-        ]
-        if session:
-            argv.extend(["--session", session])
-        argv.extend(["-p", prompt])
-        return DriverResult(argv=self._wrap_with_models(worker, argv), session=session)
+        return DriverResult(argv=self._local_argv(worker, prompt, session), session=session)
 
     def build_conclude(self, worker: WorkerConfig, prompt: str, session: str) -> list[str]:
-        if self.local:
-            return self._local_argv(worker, prompt, session)
-        env = worker.env
-        argv = [
-            "--provider",
-            "cairn",
-            "--model",
-            env["PI_MODEL"],
-            "--mode",
-            "json",
-            "--session-dir",
-            self._session_dir(worker),
-            "--session",
-            session,
-            "-p",
-            prompt,
-        ]
-        return self._wrap_with_models(worker, argv)
+        return self._local_argv(worker, prompt, session)
 
     def _local_argv(self, worker: WorkerConfig, prompt: str, session: str | None) -> list[str]:
         # Native pi: no models.json injection and no --provider/--model overrides, so pi uses
@@ -158,36 +85,6 @@ class PiDriver(WorkerDriver):
                 parts.append(text)
         return "\n".join(parts).strip() or stdout
 
-    def _wrap_with_models(self, worker: WorkerConfig, pi_argv: list[str], *, enable_tools: bool = True) -> list[str]:
-        script = (
-            'agent_dir="$1"\n'
-            'models_json="$2"\n'
-            "shift 2\n"
-            'mkdir -p "$agent_dir"\n'
-            'mkdir -p "$agent_dir/sessions"\n'
-            'printf "%s" "$models_json" > "$agent_dir/models.json"\n'
-            'exec env PI_CODING_AGENT_DIR="$agent_dir" pi "$@"\n'
-        )
-        argv = [
-            "--no-extensions",
-            "--no-skills",
-            "--no-prompt-templates",
-            "--no-themes",
-            "--no-context-files",
-        ]
-        if enable_tools:
-            argv.extend(["--tools", "read,write,edit,bash,grep,find,ls"])
-        return [
-            "/bin/sh",
-            "-lc",
-            script,
-            "--",
-            self._agent_dir(worker),
-            self._models_json(worker),
-            *argv,
-            *pi_argv,
-        ]
-
     @staticmethod
     def _agent_dir(worker: WorkerConfig) -> str:
         return str(PurePosixPath("/tmp/cairn-pi") / worker.name)
@@ -210,23 +107,3 @@ class PiDriver(WorkerDriver):
             if isinstance(payload, dict):
                 events.append(payload)
         return events
-
-    @staticmethod
-    def _models_json(worker: WorkerConfig) -> str:
-        env = worker.env
-        model: dict[str, Any] = {
-            "id": env["PI_MODEL"],
-            "name": env["PI_MODEL"],
-        }
-        context_window = env.get("PI_MODEL_CONTEXT_WINDOW")
-        if context_window:
-            model["contextWindow"] = int(context_window)
-
-        provider: dict[str, Any] = {
-            "baseUrl": env["PI_BASE_URL"],
-            "api": env["PI_PROVIDER_API"],
-            "apiKey": env["PI_API_KEY"],
-            "models": [model],
-        }
-        payload = {"providers": {"cairn": provider}}
-        return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))

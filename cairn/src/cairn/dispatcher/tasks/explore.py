@@ -7,8 +7,8 @@ from cairn.dispatcher.config import DispatchConfig, WorkerConfig
 from cairn.dispatcher.contracts import parse_json_output, validate_explore_payload
 from cairn.dispatcher.prompting import load_prompt, render_prompt
 from cairn.dispatcher.protocol.client import CairnClient
+from cairn.dispatcher.runtime.backend import ExecutionBackend
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
-from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
 from cairn.dispatcher.tasks.common import (
     best_effort_release,
@@ -17,7 +17,6 @@ from cairn.dispatcher.tasks.common import (
     project_allows_conclude_fallback,
     preview,
     run_worker_process,
-    task_healthcheck_enabled,
     write_conclude_result,
     write_graph_snapshot_reference,
 )
@@ -30,68 +29,26 @@ LOG = logging.getLogger(__name__)
 def run_explore_task(
     config: DispatchConfig,
     client: CairnClient,
-    container_manager: ContainerManager,
+    backend: ExecutionBackend,
     project: ProjectDetail,
     export_yaml: str,
     intent: Intent,
     worker: WorkerConfig,
     cancellation: TaskCancellation,
 ) -> str:
-    driver = get_driver(worker.type, config.runtime.execution)
+    driver = get_driver(worker.type)
     task_started = time.perf_counter()
-    healthcheck_timeout = config.runtime.healthcheck_timeout
     lease = HeartbeatLease.for_intent(client, project.project.id, intent.id, worker.name, config.runtime.interval)
     lease.start()
     try:
-        container_name = container_manager.ensure_running(project.project.id)
-
-        if task_healthcheck_enabled(config):
-            LOG.info(
-                "checking worker health project=%s intent=%s worker=%s timeout=%ss",
-                project.project.id,
-                intent.id,
-                worker.name,
-                healthcheck_timeout,
-            )
-            health = driver.check_health(worker, timeout=healthcheck_timeout)
-            if cancellation.is_cancelled:
-                LOG.info(
-                    "explore cancelled during healthcheck project=%s intent=%s worker=%s reason=%s",
-                    project.project.id,
-                    intent.id,
-                    worker.name,
-                    cancellation.reason,
-                )
-                best_effort_release(client, project.project.id, intent.id, worker.name)
-                return "cancelled"
-            if lease.failure is not None:
-                LOG.warning(
-                    "heartbeat lost during explore healthcheck project=%s intent=%s worker=%s status=%s",
-                    project.project.id,
-                    intent.id,
-                    worker.name,
-                    lease.failure.status_code,
-                )
-                best_effort_release(client, project.project.id, intent.id, worker.name)
-                return "failed"
-            if not health.ok:
-                LOG.warning(
-                    "worker unhealthy project=%s intent=%s worker=%s status=%s detail=%s",
-                    project.project.id,
-                    intent.id,
-                    worker.name,
-                    health.status,
-                    health.detail,
-                )
-                best_effort_release(client, project.project.id, intent.id, worker.name)
-                return "unhealthy"
+        workspace = backend.ensure_running(project.project.id)
 
         prompt = render_prompt(
             load_prompt(config.runtime.prompt_group, "explore.md"),
             {
                 "graph_yaml": write_graph_snapshot_reference(
-                    container_manager,
-                    container_name,
+                    backend,
+                    workspace,
                     export_yaml.strip(),
                     phase="explore_execute",
                 ),
@@ -105,8 +62,8 @@ def run_explore_task(
         session = execute.session
         execute_started = time.perf_counter()
         first = _run_process(
-            container_manager,
-            container_name,
+            backend,
+            workspace,
             worker,
             execute.argv,
             phase="explore_execute",
@@ -159,8 +116,8 @@ def run_explore_task(
                 return _try_conclude_fallback(
                     config,
                     client,
-                    container_manager,
-                    container_name,
+                    backend,
+                    workspace,
                     worker,
                     driver,
                     project.project.id,
@@ -206,8 +163,8 @@ def run_explore_task(
             return _try_conclude_fallback(
                 config,
                 client,
-                container_manager,
-                container_name,
+                backend,
+                workspace,
                 worker,
                 driver,
                 project.project.id,
@@ -241,8 +198,8 @@ def run_explore_task(
 def _try_conclude_fallback(
     config: DispatchConfig,
     client: CairnClient,
-    container_manager: ContainerManager,
-    container_name: str,
+    backend: ExecutionBackend,
+    workspace: str,
     worker: WorkerConfig,
     driver,
     project_id: str,
@@ -287,14 +244,14 @@ def _try_conclude_fallback(
         best_effort_release(client, project_id, intent.id, worker.name)
         return "failed"
 
-    container_name = container_manager.ensure_running(project_id)
+    workspace = backend.ensure_running(project_id)
 
     prompt = render_prompt(
         load_prompt(config.runtime.prompt_group, "explore_conclude.md"),
         {
             "graph_yaml": write_graph_snapshot_reference(
-                container_manager,
-                container_name,
+                backend,
+                workspace,
                 export_yaml.strip(),
                 phase="explore_conclude",
             ),
@@ -306,8 +263,8 @@ def _try_conclude_fallback(
     LOG.info("starting conclude fallback project=%s intent=%s worker=%s", project_id, intent.id, worker.name)
     conclude_started = time.perf_counter()
     result = _run_process(
-        container_manager,
-        container_name,
+        backend,
+        workspace,
         worker,
         conclude_argv,
         phase="explore_conclude",
@@ -385,8 +342,8 @@ def _try_conclude_fallback(
 
 
 def _run_process(
-    container_manager: ContainerManager,
-    container_name: str,
+    backend: ExecutionBackend,
+    workspace: str,
     worker: WorkerConfig,
     argv: list[str],
     *,
@@ -396,8 +353,8 @@ def _run_process(
     cancellation: TaskCancellation,
 ):
     return run_worker_process(
-        container_manager,
-        container_name,
+        backend,
+        workspace,
         worker,
         argv,
         phase=phase,

@@ -51,7 +51,7 @@ def serve(host: str, port: int, db_path: str, log_level: str, access_log: bool):
 @click.option(
     "--startup-healthcheck-only",
     is_flag=True,
-    help="Run startup worker healthchecks and exit",
+    help="Check the host worker CLIs and exit",
 )
 @click.option("--log-level", default="INFO", show_default=True, help="Log level")
 def dispatch(config_path: Path, once: bool, startup_healthcheck_only: bool, log_level: str):

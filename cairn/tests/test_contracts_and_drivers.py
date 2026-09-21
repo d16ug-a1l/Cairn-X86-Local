@@ -8,8 +8,8 @@ from cairn.dispatcher.contracts import (
     parse_json_output,
     validate_explore_payload,
     validate_reason_payload,
+    validate_writeup_payload,
 )
-from cairn.dispatcher.runtime.process import ManagedProcess
 from cairn.dispatcher.workers.adapters.pi import PiDriver
 
 
@@ -74,23 +74,32 @@ def test_pi_driver_extracts_session_and_last_assistant_text() -> None:
     assert driver.extract_response_text(stdout, "") == '{"accepted":true,"data":{}}'
 
 
-def test_close_stream_closes_response_even_when_stream_close_fails() -> None:
-    class Response:
-        def __init__(self) -> None:
-            self.closed = False
+def test_writeup_payload_accepts_markdown_content() -> None:
+    kind, content = validate_writeup_payload(
+        {"accepted": True, "data": {"writeup": "# Writeup\n\nstep 1"}}
+    )
 
-        def close(self) -> None:
-            self.closed = True
+    assert kind == "writeup"
+    assert content == "# Writeup\n\nstep 1"
 
-    class Stream:
-        def __init__(self) -> None:
-            self._response = Response()
 
-        def close(self) -> None:
-            raise ValueError("already closed")
+def test_writeup_payload_rejected() -> None:
+    kind, content = validate_writeup_payload({"accepted": False, "reason": "policy_refusal"})
 
-    stream = Stream()
-    ManagedProcess._close_stream(stream)
+    assert kind == "rejected"
+    assert content is None
 
-    assert stream._response.closed
 
+def test_writeup_payload_requires_non_empty_writeup() -> None:
+    with pytest.raises(ValueError, match="writeup is required"):
+        validate_writeup_payload({"accepted": True, "data": {"writeup": "  "}})
+
+    with pytest.raises(ValueError):
+        validate_writeup_payload({"accepted": True, "data": {"description": "wrong key"}})
+
+
+def test_writeup_payload_accepts_legacy_unwrapped_shape() -> None:
+    kind, content = validate_writeup_payload({"writeup": "legacy content"})
+
+    assert kind == "writeup"
+    assert content == "legacy content"

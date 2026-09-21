@@ -82,6 +82,19 @@ class InProcessClient:
             {"from": from_ids, "description": description, "creator": creator, "worker": None},
         )
 
+    def get_writeup(self, project_id: str) -> ApiResult:
+        response = self.http.get(f"/projects/{project_id}/writeup")
+        data = response.json() if response.headers.get("content-type", "").startswith("application/json") else None
+        return ApiResult(response.status_code, data, response.text)
+
+    def put_writeup(self, project_id: str, worker: str, content: str) -> ApiResult:
+        response = self.http.put(
+            f"/projects/{project_id}/writeup",
+            json={"worker": worker, "content": content},
+        )
+        data = response.json() if response.headers.get("content-type", "").startswith("application/json") else None
+        return ApiResult(response.status_code, data, response.text)
+
     def _post(self, path: str, payload: dict[str, Any]) -> ApiResult:
         response = self.http.post(path, json=payload)
         data = response.json() if response.headers.get("content-type", "").startswith("application/json") else None
@@ -136,22 +149,22 @@ class LocalProcess:
         self.kill()
 
 
-class LocalContainerManager:
+class FakeLocalBackend:
     def __init__(self) -> None:
         self.writes: list[tuple[str, str, str]] = []
 
     def close(self) -> None:
         return None
 
-    def container_name(self, project_id: str) -> str:
+    def project_workspace(self, project_id: str) -> str:
         return f"local-{project_id}"
 
     def ensure_running(self, project_id: str) -> str:
-        return self.container_name(project_id)
+        return self.project_workspace(project_id)
 
     def build_exec_process(
         self,
-        _container_name: str,
+        _workspace: str,
         env: dict[str, str],
         command: list[str],
         timeout_seconds: int | None = None,
@@ -161,17 +174,14 @@ class LocalContainerManager:
         assert kill_after_seconds == 5
         return LocalProcess(command, env)
 
-    def write_text_file(self, container_name: str, path: str, content: str) -> None:
-        self.writes.append((container_name, path, content))
+    def write_text_file(self, workspace: str, path: str, content: str) -> None:
+        self.writes.append((workspace, path, content))
 
     def needs_completed_cleanup(self, _project_id: str) -> bool:
         return False
 
     def needs_stopped_cleanup(self, _project_id: str) -> bool:
         return False
-
-    def managed_container_names(self) -> list[str]:
-        return []
 
 
 @pytest.fixture
@@ -202,8 +212,6 @@ def _config(
     reason: str,
     explore: str,
     task_types: list[str] | None = None,
-    worker_healthcheck: str = "startup_only",
-    healthcheck: str | None = None,
 ) -> DispatchConfig:
     return DispatchConfig.model_validate(
         {
@@ -213,8 +221,6 @@ def _config(
                 "max_workers": 1,
                 "max_running_projects": 1,
                 "max_project_workers": 1,
-                "healthcheck_timeout": 2,
-                "worker_healthcheck": worker_healthcheck,
                 "prompt_group": "mock",
             },
             "tasks": {
@@ -222,11 +228,7 @@ def _config(
                 "reason": {"timeout": 2, "max_intents": 1},
                 "explore": {"timeout": 2, "conclude_timeout": 2},
             },
-            "container": {
-                "image": "unused",
-                "network_mode": "host",
-                "completed_action": "stop",
-            },
+            "local": {},
             "workers": [
                 {
                     "name": "mock-worker",
@@ -235,7 +237,6 @@ def _config(
                     "max_running": 1,
                     "priority": 0,
                     "env": {
-                        "MOCK_HEALTHCHECK": healthcheck or _phase("ok"),
                         "MOCK_BOOTSTRAP": bootstrap,
                         "MOCK_REASON": reason,
                         "MOCK_EXPLORE_EXECUTE": explore,
@@ -246,22 +247,23 @@ def _config(
     )
 
 
-def _loop(config: DispatchConfig, client: InProcessClient, containers: LocalContainerManager) -> DispatcherLoop:
+def _loop(config: DispatchConfig, client: InProcessClient, backend: FakeLocalBackend) -> DispatcherLoop:
     loop = DispatcherLoop.__new__(DispatcherLoop)
     loop.config = config
     loop.client = client
-    loop.container_manager = containers
+    loop.backend = backend
     loop.executor = ThreadPoolExecutor(max_workers=config.runtime.max_workers)
     loop.cleanup_executor = ThreadPoolExecutor(max_workers=1)
     loop.futures = {}
     loop.cleanup_futures = {}
     loop.reason_checkpoints = {}
     loop.runtime_project_ids = set()
-    loop.worker_unhealthy_until = {}
     loop.worker_rejected_until = {}
     loop._log_state = {}
     loop._cleanup_pending = set()
     loop._inactive_cleanup_done = {}
+    loop._writeup_done = set()
+    loop._writeup_retry_after = {}
     loop.project_cursor = 0
     return loop
 
@@ -272,7 +274,7 @@ def _dispatch_and_wait(loop: DispatcherLoop) -> None:
     loop._initialize_reason_checkpoints(summaries)
     loop._refresh_runtime_projects(summaries)
     loop._cancel_inactive_tasks(summaries)
-    loop._queue_container_cleanups(summaries)
+    loop._queue_workspace_cleanups(summaries)
     loop._dispatch_available(summaries)
     assert loop.futures
     for future in list(loop.futures):
@@ -291,7 +293,7 @@ def _create_project(http: TestClient) -> str:
 
 def test_mock_scheduler_bootstrap_completes_project_end_to_end(http_client: TestClient) -> None:
     client = InProcessClient(http_client)
-    containers = LocalContainerManager()
+    containers = FakeLocalBackend()
     loop = _loop(
         _config(
             bootstrap=_phase("complete"),
@@ -316,7 +318,7 @@ def test_mock_scheduler_bootstrap_completes_project_end_to_end(http_client: Test
 
 def test_mock_scheduler_runs_reason_explore_reason_complete_chain(http_client: TestClient) -> None:
     client = InProcessClient(http_client)
-    containers = LocalContainerManager()
+    containers = FakeLocalBackend()
     loop = _loop(
         _config(
             bootstrap=_phase("complete"),
@@ -356,7 +358,7 @@ def test_mock_scheduler_enabled_project_skips_bootstrap_when_worker_does_not_sup
     http_client: TestClient,
 ) -> None:
     client = InProcessClient(http_client)
-    containers = LocalContainerManager()
+    containers = FakeLocalBackend()
     loop = _loop(
         _config(
             bootstrap=_phase("complete"),
@@ -381,15 +383,15 @@ def test_mock_scheduler_enabled_project_skips_bootstrap_when_worker_does_not_sup
     ]
 
 
-def test_task_healthcheck_healthy_worker_completes_end_to_end(http_client: TestClient) -> None:
+def test_mock_scheduler_generates_writeup_after_completion(http_client: TestClient) -> None:
     client = InProcessClient(http_client)
-    containers = LocalContainerManager()
+    containers = FakeLocalBackend()
     loop = _loop(
         _config(
             bootstrap=_phase("complete"),
             reason=_phase("complete", zero_outcomes=["intent"]),
             explore=_phase("fact"),
-            worker_healthcheck="startup_and_task",
+            task_types=["bootstrap", "reason", "explore", "writeup"],
         ),
         client,
         containers,
@@ -398,101 +400,23 @@ def test_task_healthcheck_healthy_worker_completes_end_to_end(http_client: TestC
 
     try:
         _dispatch_and_wait(loop)
-        project = client.get_project(project_id)
+        assert client.get_project(project_id).project.status == "completed"
+
+        loop._reap_futures()
+        summaries = client.list_projects()
+        loop._refresh_runtime_projects(summaries)
+        loop._cancel_inactive_tasks(summaries)
+        loop._dispatch_writeups(summaries)
+        assert loop.futures
+        for future in list(loop.futures):
+            future.result(timeout=5)
+        loop._reap_futures()
     finally:
         loop.close()
 
-    # code-based check_health runs before the task, passes, and the bootstrap completes
-    assert project.project.status == "completed"
-
-
-def test_task_healthcheck_failure_aborts_task_and_cools_down_worker(http_client: TestClient) -> None:
-    client = InProcessClient(http_client)
-    containers = LocalContainerManager()
-    loop = _loop(
-        _config(
-            bootstrap=_phase("complete"),
-            reason=_phase("complete", zero_outcomes=["intent"]),
-            explore=_phase("fact"),
-            worker_healthcheck="startup_and_task",
-            healthcheck=_phase("fail", zero_outcomes=["ok"]),
-        ),
-        client,
-        containers,
-    )
-    project_id = _create_project(http_client)
-
-    try:
-        _dispatch_and_wait(loop)
-        project = client.get_project(project_id)
-    finally:
-        loop.close()
-
-    # unhealthy worker -> task aborted before execution, no facts written, worker put on cooldown
-    assert project.project.status == "active"
-    assert [fact.id for fact in project.facts] == ["origin", "goal"]
-    assert "mock-worker" in loop.worker_unhealthy_until
-
-
-def _failover_config() -> DispatchConfig:
-    def worker(name: str, priority: int, healthcheck: str) -> dict:
-        return {
-            "name": name,
-            "type": "mock",
-            "task_types": ["bootstrap", "reason", "explore"],
-            "max_running": 1,
-            "priority": priority,
-            "env": {
-                "MOCK_HEALTHCHECK": healthcheck,
-                "MOCK_BOOTSTRAP": _phase("complete"),
-                "MOCK_REASON": _phase("complete", zero_outcomes=["intent"]),
-                "MOCK_EXPLORE_EXECUTE": _phase("fact"),
-            },
-        }
-
-    return DispatchConfig.model_validate(
-        {
-            "server": "in-process",
-            "runtime": {
-                "interval": 1,
-                "max_workers": 1,
-                "max_running_projects": 1,
-                "max_project_workers": 1,
-                "healthcheck_timeout": 2,
-                "worker_healthcheck": "startup_and_task",
-                "prompt_group": "mock",
-            },
-            "tasks": {
-                "bootstrap": {"timeout": 2, "conclude_timeout": 2},
-                "reason": {"timeout": 2, "max_intents": 1},
-                "explore": {"timeout": 2, "conclude_timeout": 2},
-            },
-            "container": {"image": "unused", "network_mode": "host", "completed_action": "stop"},
-            "workers": [
-                worker("bad", 0, _phase("fail", zero_outcomes=["ok"])),
-                worker("good", 1, _phase("ok")),
-            ],
-        }
-    )
-
-
-def test_unhealthy_worker_fails_over_to_healthy_worker(http_client: TestClient) -> None:
-    client = InProcessClient(http_client)
-    containers = LocalContainerManager()
-    loop = _loop(_failover_config(), client, containers)
-    project_id = _create_project(http_client)
-
-    try:
-        # round 1: 'bad' (priority 0) is chosen first, its health check fails -> cooldown
-        _dispatch_and_wait(loop)
-        assert "bad" in loop.worker_unhealthy_until
-        assert client.get_project(project_id).project.status == "active"
-
-        # round 2: 'bad' still cooling down -> 'good' takes over and completes the project
-        _dispatch_and_wait(loop)
-        project = client.get_project(project_id)
-    finally:
-        loop.close()
-
-    assert project.project.status == "completed"
-    assert any(intent.worker == "good" for intent in project.intents)
+    assert project_id in loop._writeup_done
+    response = http_client.get(f"/projects/{project_id}/writeup")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["worker"] == "mock-worker"
+    assert "Mock Writeup" in payload["content"]

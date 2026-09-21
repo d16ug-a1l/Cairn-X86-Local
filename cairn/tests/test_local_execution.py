@@ -122,7 +122,7 @@ def test_local_backend_creates_isolated_project_dir(tmp_path: Path) -> None:
 
     assert Path(handle) == tmp_path / "proj_001"
     assert Path(handle).is_dir()
-    assert backend.container_name("proj_001") == str(tmp_path / "proj_001")
+    assert backend.project_workspace("proj_001") == str(tmp_path / "proj_001")
 
 
 def test_local_backend_merges_host_env_with_worker_env(tmp_path: Path, monkeypatch) -> None:
@@ -214,13 +214,10 @@ def _local_payload() -> dict:
     return {
         "server": "http://127.0.0.1:8000",
         "runtime": {
-            "execution": "local",
-            "worker_healthcheck": "disabled",
             "interval": 3,
             "max_workers": 2,
             "max_running_projects": 1,
             "max_project_workers": 2,
-            "healthcheck_timeout": 5,
             "prompt_group": "default",
         },
         "tasks": {
@@ -236,10 +233,9 @@ def _local_payload() -> dict:
     }
 
 
-def test_local_execution_needs_no_container_or_worker_env() -> None:
+def test_local_execution_needs_no_worker_env() -> None:
     config = DispatchConfig.model_validate(_local_payload())
 
-    assert config.container is None
     assert config.local is not None
     assert config.local.completed_action == "keep"
     assert all(worker.env == {} for worker in config.workers)
@@ -255,29 +251,9 @@ def test_local_workspace_root_is_optional_and_defaults_null() -> None:
     assert config.local.completed_action == "remove"
 
 
-def test_container_execution_requires_container_block() -> None:
-    payload = make_config().model_dump()
-    payload["container"] = None
-
-    with pytest.raises(ValidationError, match="container config is required"):
-        DispatchConfig.model_validate(payload)
-
-
-def test_container_execution_still_requires_worker_env() -> None:
-    payload = _local_payload()
-    payload["runtime"]["execution"] = "container"
-    payload["runtime"]["worker_healthcheck"] = "startup_only"
-    payload["container"] = {"image": "img", "network_mode": "host", "completed_action": "stop"}
-
-    with pytest.raises(ValidationError, match="missing env keys"):
-        DispatchConfig.model_validate(payload)
-
-
 def test_shipped_local_example_config_is_valid() -> None:
     config = DispatchConfig.load(REPO_ROOT / "dispatch.local.example.yaml")
 
-    assert config.runtime.execution == "local"
-    assert config.container is None
     assert config.local is not None
     assert config.local.completed_action == "keep"
 
@@ -318,13 +294,13 @@ def _bare_worker(worker_type: str) -> WorkerConfig:
 
 def test_codex_local_driver_omits_provider_injection() -> None:
     worker = _bare_worker("codex")
-    argv = CodexDriver(local=True).build_execute(worker, "PROMPT", None).argv
+    argv = CodexDriver().build_execute(worker, "PROMPT", None).argv
 
     assert argv == ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--", "PROMPT"]
     assert not any("model_providers" in part for part in argv)
     assert "--model" not in argv
 
-    conclude = CodexDriver(local=True).build_conclude(worker, "PROMPT", "sess-1")
+    conclude = CodexDriver().build_conclude(worker, "PROMPT", "sess-1")
     assert conclude[:4] == ["codex", "exec", "resume", "sess-1"]
     assert conclude[-2:] == ["--", "PROMPT"]
     assert not any("model_providers" in part for part in conclude)
@@ -332,22 +308,13 @@ def test_codex_local_driver_omits_provider_injection() -> None:
 
 def test_pi_local_driver_omits_models_json_and_provider() -> None:
     worker = _bare_worker("pi")
-    argv = PiDriver(local=True).build_execute(worker, "PROMPT", None).argv
+    argv = PiDriver().build_execute(worker, "PROMPT", None).argv
 
     assert argv[0] == "/bin/sh"
     assert "exec pi" in argv[2]
     assert "--provider" not in argv
     assert "--model" not in argv
     assert argv[-2:] == ["-p", "PROMPT"]
-
-
-def test_get_driver_selects_local_or_container_variant() -> None:
-    assert get_driver("codex", "local").local is True
-    assert get_driver("codex").local is False
-    assert get_driver("pi", "local").local is True
-    # claudecode and mock are shared instances across both modes
-    assert get_driver("claudecode", "local") is get_driver("claudecode")
-    assert get_driver("mock", "local") is get_driver("mock")
 
 
 # --------------------------------------------------------------------------- end to end
@@ -358,13 +325,10 @@ def _local_config_for_worker(name: str, worker_type: str) -> DispatchConfig:
         {
             "server": "in-process",
             "runtime": {
-                "execution": "local",
-                "worker_healthcheck": "disabled",
                 "interval": 60,
                 "max_workers": 1,
                 "max_running_projects": 1,
                 "max_project_workers": 1,
-                "healthcheck_timeout": 5,
                 "prompt_group": "default",
             },
             "tasks": {

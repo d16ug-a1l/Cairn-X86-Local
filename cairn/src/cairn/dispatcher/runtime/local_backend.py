@@ -12,13 +12,12 @@ LOG = logging.getLogger(__name__)
 
 
 class LocalBackend:
-    """Runs workers directly on the dispatcher host instead of in per-project containers.
+    """Runs workers directly on the dispatcher host.
 
     Each project gets an isolated working directory under ``workspace_root`` (defaulting
     to the directory the dispatcher was started in). Worker processes inherit the host
     environment so the pre-configured ``claude`` / ``codex`` / ``pi`` CLIs and their
-    credentials are used as-is; no API keys are injected. There are no containers to
-    build or tear down, so the container-lifecycle methods are inert.
+    credentials are used as-is; no API keys are injected.
     """
 
     def __init__(self, config: LocalConfig):
@@ -26,10 +25,14 @@ class LocalBackend:
         root = config.workspace_root
         self._root = Path(root).expanduser() if root else Path.cwd()
 
+    @property
+    def workspace_root(self) -> Path:
+        return self._root
+
     def close(self) -> None:
         return None
 
-    def container_name(self, project_id: str) -> str:
+    def project_workspace(self, project_id: str) -> str:
         return str(self._project_dir(project_id))
 
     def ensure_running(self, project_id: str) -> str:
@@ -40,7 +43,7 @@ class LocalBackend:
 
     def build_exec_process(
         self,
-        container_name: str,
+        workspace: str,
         env: dict[str, str],
         command: list[str],
         timeout_seconds: int | None = None,
@@ -49,13 +52,13 @@ class LocalBackend:
         merged_env = {**os.environ, **(env or {})}
         return LocalProcess(
             command,
-            cwd=container_name,
+            cwd=workspace,
             env=merged_env,
             timeout_seconds=timeout_seconds,
             term_grace_seconds=kill_after_seconds,
         )
 
-    def write_text_file(self, container_name: str, path: str, content: str) -> None:
+    def write_text_file(self, workspace: str, path: str, content: str) -> None:
         target = Path(path)
         if not target.is_absolute():
             raise ValueError(f"local file path must be absolute: {path}")
@@ -77,9 +80,6 @@ class LocalBackend:
 
     def cleanup_stopped(self, project_id: str) -> bool:
         return True
-
-    def managed_container_names(self) -> list[str]:
-        return []
 
     def _project_dir(self, project_id: str) -> Path:
         return self._root / project_id.replace("/", "-")

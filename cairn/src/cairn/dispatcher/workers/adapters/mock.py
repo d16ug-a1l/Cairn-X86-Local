@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import json
-import random
 
 from cairn.dispatcher.config import WorkerConfig, resolve_mock_behavior
 from cairn.dispatcher.workers.base import DriverResult, SeedSessionDriver
-from cairn.dispatcher.workers.health import HealthResult
 
 _SCRIPT = """
 import json,random,sys,time
@@ -63,8 +61,6 @@ else:
             outcome=name
             break
 
-if phase=="healthcheck":
-    raise SystemExit(0 if outcome=="ok" else 1)
 if outcome=="command_fail":
     print(f"mock {phase} command failed", file=sys.stderr)
     raise SystemExit(1)
@@ -112,6 +108,15 @@ if phase=="bootstrap_conclude":
         print(json.dumps({"accepted":True,"data":{"complete":{"description":"mock invalid payload"}}}, ensure_ascii=False))
     raise SystemExit(0)
 
+if phase=="writeup":
+    if outcome=="writeup":
+        print(json.dumps({"accepted":True,"data":{"writeup":f"# Mock Writeup\\n\\norigin: {prompt.get('origin','')}\\ngoal: {prompt.get('goal','')}\\n\\nmock successful path writeup."}}, ensure_ascii=False))
+    elif outcome=="rejected":
+        print(json.dumps({"accepted":False,"reason":"mock_rejected"}, ensure_ascii=False))
+    else:
+        print(json.dumps({"accepted":True,"data":{}}, ensure_ascii=False))
+    raise SystemExit(0)
+
 if outcome=="fact":
     label = prompt.get("intent_id") or phase
     print(json.dumps({"accepted":True,"data":{"description":f"mock fact for {label}"}} , ensure_ascii=False))
@@ -132,14 +137,6 @@ class MockDriver(SeedSessionDriver):
     def _argv(worker: WorkerConfig, prompt: str) -> list[str]:
         behavior = resolve_mock_behavior(worker.name, worker.env)
         return ["python3", "-c", _SCRIPT, json.dumps(behavior, ensure_ascii=False), prompt]
-
-    def check_health(self, worker: WorkerConfig, *, timeout: float) -> HealthResult:
-        outcomes = resolve_mock_behavior(worker.name, worker.env)["healthcheck"]["outcomes"]
-        ok = random.random() < outcomes.get("ok", 0.0)
-        return HealthResult(ok=ok, status=200 if ok else 503, detail="" if ok else "mock healthcheck fail")
-
-    def describe_health(self, worker: WorkerConfig) -> str:
-        return "mock in-process healthcheck"
 
     def build_execute(self, worker: WorkerConfig, prompt: str, session: str | None) -> DriverResult:
         return DriverResult(argv=self._argv(worker, prompt), session=session)

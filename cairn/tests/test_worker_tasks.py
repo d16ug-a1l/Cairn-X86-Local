@@ -5,12 +5,12 @@ from collections.abc import Iterator
 from cairn.dispatcher.protocol.client import ApiResult
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.runtime.process import ProcessResult
-from cairn.dispatcher.workers.health import HealthResult
-from cairn.dispatcher.tasks import bootstrap, explore, reason
+from cairn.dispatcher.tasks import bootstrap, explore, reason, writeup
+from cairn.server.models import Intent, ProjectDetail
 
 from conftest import (
     FakeClient,
-    FakeContainerManager,
+    FakeBackend,
     FakeDriver,
     FakeLease,
     make_config,
@@ -27,7 +27,7 @@ def test_reason_writes_graph_snapshot_and_creates_intent(monkeypatch) -> None:
     config = make_config()
     project = make_project()
     client = FakeClient(project)
-    containers = FakeContainerManager()
+    containers = FakeBackend()
     driver = FakeDriver()
     lease = FakeLease()
     graph_yaml = "project:\n  title: huge\n" + ("x" * 100_000)
@@ -59,8 +59,8 @@ def test_reason_writes_graph_snapshot_and_creates_intent(monkeypatch) -> None:
     assert client.released_reasons == [("proj_001", "test-worker")]
     assert lease.started and lease.stopped
     assert len(containers.writes) == 1
-    container_name, path, content = containers.writes[0]
-    assert container_name == "container-proj_001"
+    workspace, path, content = containers.writes[0]
+    assert workspace == "workspace-proj_001"
     assert path.startswith("/tmp/cairn-prompts/reason_execute-")
     assert path.endswith("/graph.yaml")
     assert content == graph_yaml
@@ -73,7 +73,7 @@ def test_explore_early_plain_text_exit_uses_conclude_fallback(monkeypatch) -> No
     intent = make_intent()
     project = make_project(intents=[intent])
     client = FakeClient(project)
-    containers = FakeContainerManager()
+    containers = FakeBackend()
     driver = FakeDriver()
     lease = FakeLease()
     results: Iterator[ProcessResult] = iter(
@@ -108,42 +108,12 @@ def test_explore_early_plain_text_exit_uses_conclude_fallback(monkeypatch) -> No
     assert lease.started and lease.stopped
 
 
-def test_explore_healthcheck_failure_releases_claim(monkeypatch) -> None:
-    config = make_config()
-    config.runtime.worker_healthcheck = "startup_and_task"
-    intent = make_intent()
-    project = make_project(intents=[intent])
-    client = FakeClient(project)
-    containers = FakeContainerManager()
-    lease = FakeLease()
-
-    driver = FakeDriver()
-    driver.health = HealthResult(ok=False, status=401, detail="unauthorized")
-    monkeypatch.setattr(explore, "get_driver", lambda *_a, **_k: driver)
-    monkeypatch.setattr(explore.HeartbeatLease, "for_intent", _lease_factory(lease))
-
-    outcome = explore.run_explore_task(
-        config,
-        client,
-        containers,
-        project,
-        "graph",
-        intent,
-        config.workers[0],
-        TaskCancellation(),
-    )
-
-    assert outcome == "unhealthy"
-    assert client.released == [("proj_001", "i001", "test-worker")]
-    assert containers.writes == []
-
-
 def test_bootstrap_success_concludes_fact_then_completes_project(monkeypatch) -> None:
     config = make_config()
     intent = make_intent()
     project = make_project(intents=[intent])
     client = FakeClient(project)
-    containers = FakeContainerManager()
+    containers = FakeBackend()
     driver = FakeDriver()
     lease = FakeLease()
 
@@ -180,7 +150,7 @@ def test_reason_complete_treats_inactive_project_as_success(monkeypatch) -> None
     config = make_config()
     project = make_project()
     client = FakeClient(project)
-    containers = FakeContainerManager()
+    containers = FakeBackend()
     lease = FakeLease()
 
     def complete(*_args, **_kwargs) -> ApiResult:
@@ -213,41 +183,128 @@ def test_reason_complete_treats_inactive_project_as_success(monkeypatch) -> None
     assert client.released_reasons == [("proj_001", "test-worker")]
 
 
-def test_reason_startup_only_mode_skips_task_healthcheck(monkeypatch) -> None:
-    config = make_config()
-    config.runtime.worker_healthcheck = "startup_only"
-    project = make_project()
-    client = FakeClient(project)
-    containers = FakeContainerManager()
-    lease = FakeLease()
+def _completed_project() -> ProjectDetail:
+    project = make_project(
+        intents=[
+            Intent(
+                id="i001",
+                from_=["origin"],
+                to="f001",
+                description="scan target",
+                creator="reasoner",
+                worker="test-worker",
+                created_at="2026-01-01T00:00:02Z",
+                concluded_at="2026-01-01T00:01:00Z",
+            ),
+            Intent(
+                id="i002",
+                from_=["f001"],
+                to="goal",
+                description="solved",
+                creator="test-worker",
+                worker="test-worker",
+                created_at="2026-01-01T00:02:00Z",
+                concluded_at="2026-01-01T00:02:00Z",
+            ),
+        ]
+    )
+    project.project.status = "completed"
+    return project
 
+
+def test_writeup_find_main_chain_traces_origin_to_goal() -> None:
+    chain = writeup.find_main_chain(_completed_project())
+
+    assert [intent.id for intent in chain] == ["i001", "i002"]
+
+
+def test_writeup_task_stores_generated_markdown(monkeypatch) -> None:
+    config = make_config()
+    project = _completed_project()
+    client = FakeClient(project)
+    containers = FakeBackend()
     driver = FakeDriver()
 
-    def _boom(*_a, **_k):
-        raise AssertionError("task healthcheck should be skipped")
-
-    driver.check_health = _boom  # type: ignore[method-assign]
-    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: driver)
-    monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(lease))
+    monkeypatch.setattr(writeup, "get_driver", lambda *_a, **_k: driver)
     monkeypatch.setattr(
-        reason,
+        writeup,
         "run_worker_process",
         lambda *_args, **_kwargs: ProcessResult(
             0,
-            '{"accepted":true,"data":{"intents":[{"from":["f001"],"description":"next"}]}}',
+            '{"accepted":true,"data":{"writeup":"# Writeup\\n\\nstep one"}}',
             "",
         ),
     )
 
-    outcome = reason.run_reason_task(
+    outcome = writeup.run_writeup_task(
         config,
         client,
         containers,
         project,
-        "graph",
         config.workers[0],
         TaskCancellation(),
     )
 
     assert outcome == "success"
-    assert client.created_intents == [("proj_001", ["f001"], "next", "test-worker")]
+    assert client.writeups == {"proj_001": ("test-worker", "# Writeup\n\nstep one")}
+    prompt = driver.execute_prompts[0]
+    assert "i001" in prompt and "i002" in prompt
+    assert "known fact" in prompt
+    assert "No execution records found" in prompt
+
+
+def test_writeup_task_treats_409_write_as_cancelled(monkeypatch) -> None:
+    config = make_config()
+    project = _completed_project()
+    client = FakeClient(project)
+    containers = FakeBackend()
+
+    monkeypatch.setattr(writeup, "get_driver", lambda *_a, **_k: FakeDriver())
+    monkeypatch.setattr(
+        writeup,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(
+            0,
+            '{"accepted":true,"data":{"writeup":"content"}}',
+            "",
+        ),
+    )
+    monkeypatch.setattr(client, "put_writeup", lambda *_a, **_k: ApiResult(409, text="active"))
+
+    outcome = writeup.run_writeup_task(
+        config,
+        client,
+        containers,
+        project,
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    assert outcome == "cancelled"
+    assert client.writeups == {}
+
+
+def test_writeup_task_parse_failure_returns_failed(monkeypatch) -> None:
+    config = make_config()
+    project = _completed_project()
+    client = FakeClient(project)
+    containers = FakeBackend()
+
+    monkeypatch.setattr(writeup, "get_driver", lambda *_a, **_k: FakeDriver())
+    monkeypatch.setattr(
+        writeup,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(0, "not json at all", ""),
+    )
+
+    outcome = writeup.run_writeup_task(
+        config,
+        client,
+        containers,
+        project,
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    assert outcome == "failed"
+    assert client.writeups == {}

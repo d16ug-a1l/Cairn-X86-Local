@@ -7,8 +7,8 @@ from dataclasses import dataclass
 
 from cairn.dispatcher.config import DispatchConfig, WorkerConfig
 from cairn.dispatcher.protocol.client import CairnClient
+from cairn.dispatcher.runtime.backend import ExecutionBackend
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
-from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
 from cairn.dispatcher.runtime.process import ProcessResult
 
@@ -47,23 +47,17 @@ def communicate_timeout(timeout_seconds: int, grace_seconds: int = PROCESS_COMMU
     return timeout_seconds + grace_seconds
 
 
-def task_healthcheck_enabled(config: DispatchConfig) -> bool:
-    if config.runtime.execution == "local":
-        return False
-    return config.runtime.worker_healthcheck == "startup_and_task"
-
-
 def write_graph_snapshot_reference(
-    container_manager: ContainerManager,
-    container_name: str,
+    backend: ExecutionBackend,
+    workspace: str,
     graph_yaml: str,
     *,
     phase: str,
 ) -> str:
     path = f"{GRAPH_SNAPSHOT_ROOT}/{phase}-{uuid.uuid4().hex[:12]}/graph.yaml"
-    container_manager.write_text_file(container_name, path, graph_yaml)
+    backend.write_text_file(workspace, path, graph_yaml)
     return (
-        "The graph YAML snapshot is stored in this file inside the current container:\n\n"
+        "The graph YAML snapshot is stored in this file on the current host:\n\n"
         f"{path}\n\n"
         "Before using the graph, read the entire file and treat its contents as the YAML snapshot "
         "for this Graph section."
@@ -71,8 +65,8 @@ def write_graph_snapshot_reference(
 
 
 def run_worker_process(
-    container_manager: ContainerManager,
-    container_name: str,
+    backend: ExecutionBackend,
+    workspace: str,
     worker: WorkerConfig,
     argv: list[str],
     *,
@@ -82,14 +76,14 @@ def run_worker_process(
     cancellation: TaskCancellation | None = None,
 ) -> ProcessResult:
     LOG.info(
-        "starting container exec container=%s worker=%s phase=%s timeout=%ss",
-        container_name,
+        "starting worker process workspace=%s worker=%s phase=%s timeout=%ss",
+        workspace,
         worker.name,
         phase,
         timeout_seconds,
     )
-    process = container_manager.build_exec_process(
-        container_name,
+    process = backend.build_exec_process(
+        workspace,
         dict(worker.env),
         argv,
         timeout_seconds=timeout_seconds,
