@@ -79,6 +79,14 @@ CREATE TABLE IF NOT EXISTS scoped_counters (
     value INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (project_id, kind)
 );
+
+CREATE TABLE IF NOT EXISTS writeups (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    worker TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 

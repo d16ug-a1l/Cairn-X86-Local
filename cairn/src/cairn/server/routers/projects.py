@@ -340,6 +340,10 @@ def reopen_project(project_id: str, body: ReopenRequest):
             )
         clear_project_reason(conn, project_id)
         conn.execute(
+            "DELETE FROM writeups WHERE project_id = ?",
+            (project_id,),
+        )
+        conn.execute(
             "UPDATE projects SET status = 'active' WHERE id = ?",
             (project_id,),
         )

@@ -72,6 +72,16 @@ class CairnClient:
         response.raise_for_status()
         return response.text
 
+    def get_writeup(self, project_id: str) -> ApiResult:
+        return self._request("GET", f"/projects/{project_id}/writeup")
+
+    def put_writeup(self, project_id: str, worker: str, content: str) -> ApiResult:
+        return self._request_json(
+            "PUT",
+            f"/projects/{project_id}/writeup",
+            json={"worker": worker, "content": content},
+        )
+
     def heartbeat(self, project_id: str, intent_id: str, worker: str) -> ApiResult:
         return self._request_json(
             "POST",
@@ -127,6 +137,21 @@ class CairnClient:
             f"/projects/{project_id}/intents",
             json={"from": from_ids, "description": description, "creator": creator, "worker": None},
         )
+
+    def _request(self, method: str, path: str) -> ApiResult:
+        try:
+            response = self._session().request(
+                method,
+                self._url(path),
+                timeout=self._timeout,
+            )
+        except requests.RequestException as exc:
+            LOG.warning("request failed method=%s path=%s error=%s", method, path, exc)
+            return ApiResult(status_code=0, text=str(exc))
+        data: Any | None = None
+        if response.headers.get("content-type", "").startswith("application/json"):
+            data = response.json()
+        return ApiResult(status_code=response.status_code, data=data, text=response.text)
 
     def _request_json(self, method: str, path: str, json: dict[str, Any]) -> ApiResult:
         try:

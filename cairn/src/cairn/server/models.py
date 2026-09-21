@@ -209,6 +209,27 @@ class ConcludeResponse(BaseModel):
     intent: Intent
 
 
+class Writeup(BaseModel):
+    project_id: str
+    content: str
+    worker: str
+    created_at: str
+    updated_at: str
+
+
+class PutWriteupRequest(BaseModel):
+    content: str
+    worker: str
+
+    @field_validator("content", "worker")
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("must not be empty")
+        return text
+
+
 class UpdateProjectStatusRequest(BaseModel):
     status: Literal["active", "stopped"]
 

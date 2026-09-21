@@ -59,6 +59,10 @@ def _looks_like_explore_data(payload: dict[str, Any]) -> bool:
     return isinstance(payload, dict) and set(payload) == {"description"}
 
 
+def _looks_like_writeup_data(payload: dict[str, Any]) -> bool:
+    return isinstance(payload, dict) and set(payload) == {"writeup"}
+
+
 def validate_reason_payload(
     payload: dict[str, Any], open_intents_empty: bool, max_intents: int,
 ) -> tuple[str, dict[str, Any] | list[dict[str, Any]] | None]:
@@ -168,3 +172,19 @@ def validate_explore_payload(payload: dict[str, Any]) -> tuple[str, str | None]:
     if not isinstance(description, str) or not description.strip():
         raise ValueError("description is required")
     return "fact", description.strip()
+
+
+def validate_writeup_payload(payload: dict[str, Any]) -> tuple[str, str | None]:
+    accepted, data = _unwrap_wrapped_payload(payload)
+    if accepted is False:
+        return "rejected", None
+    if accepted is None:
+        if not _looks_like_writeup_data(payload):
+            raise ValueError("accepted must be true or false")
+        data = payload
+    if not isinstance(data, dict):
+        raise ValueError("accepted must be true or false")
+    writeup = data.get("writeup")
+    if not isinstance(writeup, str) or not writeup.strip():
+        raise ValueError("writeup is required")
+    return "writeup", writeup.strip()

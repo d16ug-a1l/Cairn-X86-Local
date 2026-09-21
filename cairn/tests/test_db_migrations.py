@@ -68,3 +68,31 @@ def test_configure_maps_disabled_bootstrap_mode_to_false(tmp_path, monkeypatch) 
         ("proj_001", 0),
         ("proj_002", 1),
     ]
+
+
+def test_configure_adds_writeups_table_to_legacy_database(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "legacy-writeups.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                reason_worker TEXT,
+                reason_trigger TEXT,
+                reason_started_at TEXT,
+                reason_last_heartbeat_at TEXT
+            )
+            """
+        )
+
+    monkeypatch.setattr(db, "_db_path", None)
+    db.configure(path)
+
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'writeups'"
+        ).fetchone()
+    assert row is not None
