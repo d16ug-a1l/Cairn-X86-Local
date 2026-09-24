@@ -529,7 +529,7 @@ dispatcher/
 
 - 项目状态为 `completed`
 - `runtime.writeup_enabled = true`，且配置中存在 `task_types` 包含 `writeup` 的 Worker；否则整个 writeup 功能关闭（旧配置自然不含 `writeup`，即默认关闭调度）
-- Server 尚无该项目 writeup：`GET /projects/{project_id}/writeup` 返回 `404`。若已存在（`200`），记入本地完成集合并跳过——重启后靠这个 GET 判重，不依赖持久化的本地状态
+- Server 尚无该项目 writeup：`GET /projects/{project_id}/writeup` 返回 `404`。若已存在（`200`），记入本地完成集合并跳过——重启后靠这个 GET 判重，不依赖持久化的本地状态。已进入完成集合的项目也会每 60s（`WRITEUP_VERIFY_INTERVAL_SECONDS`）重新核对一次：若 writeup 已被删除（如 UI 的「重新生成」），自动重新调度生成；核对请求失败时保持原状态，不误触发重生
 - 该项目当前没有运行中任务，且项目工作区不在 cleanup 队列中
 - 本地失败重试窗口已过（见下方）
 

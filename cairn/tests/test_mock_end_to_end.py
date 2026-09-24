@@ -264,6 +264,7 @@ def _loop(config: DispatchConfig, client: InProcessClient, backend: FakeLocalBac
     loop._inactive_cleanup_done = {}
     loop._writeup_done = set()
     loop._writeup_retry_after = {}
+    loop._writeup_verified_at = {}
     loop.project_cursor = 0
     return loop
 

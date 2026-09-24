@@ -26,6 +26,7 @@ from cairn.server.models import Intent, ProjectDetail, ProjectSummary
 LOG = logging.getLogger(__name__)
 REJECTED_RETRY_AFTER_SECONDS = 5
 WRITEUP_RETRY_AFTER_SECONDS = 30
+WRITEUP_VERIFY_INTERVAL_SECONDS = 60
 BOOTSTRAP_INTENT_DESCRIPTION = "bootstrap"
 BOOTSTRAP_INTENT_CREATOR = "dispatcher.bootstrap"
 
@@ -56,6 +57,7 @@ class DispatcherLoop:
         self._inactive_cleanup_done: dict[str, str] = {}
         self._writeup_done: set[str] = set()
         self._writeup_retry_after: dict[str, float] = {}
+        self._writeup_verified_at: dict[str, float] = {}
         self.project_cursor = 0
         self._settings_checked = False
         self._startup_healthchecks_checked = False
@@ -570,7 +572,10 @@ class DispatcherLoop:
                 return
             if summary.status != "completed":
                 continue
-            if summary.id in self._writeup_done:
+            if (
+                summary.id in self._writeup_done
+                and self._writeup_verified_at.get(summary.id, 0) > now - WRITEUP_VERIFY_INTERVAL_SECONDS
+            ):
                 continue
             if self._writeup_retry_after.get(summary.id, 0) > now:
                 continue
@@ -582,7 +587,13 @@ class DispatcherLoop:
             existing = self.client.get_writeup(summary.id)
             if existing.ok:
                 self._writeup_done.add(summary.id)
-                LOG.info("writeup already exists project=%s", summary.id)
+                self._writeup_verified_at[summary.id] = now
+                self._log_changed(
+                    f"project:{summary.id}:writeup:exists",
+                    logging.INFO,
+                    "writeup already exists project=%s",
+                    summary.id,
+                )
                 continue
             if existing.status_code != 404:
                 self._log_changed(
@@ -593,6 +604,9 @@ class DispatcherLoop:
                     existing.status_code,
                 )
                 continue
+            if summary.id in self._writeup_done:
+                self._writeup_done.discard(summary.id)
+                LOG.info("writeup missing, scheduling regeneration project=%s", summary.id)
             project = self.client.get_project(summary.id)
             if project.project.status != "completed":
                 continue
@@ -828,6 +842,7 @@ class DispatcherLoop:
                     self.worker_rejected_until.pop(rejection_key, None)
                 if outcome == "success" and task.task_type == "writeup":
                     self._writeup_done.add(task.project_id)
+                    self._writeup_verified_at[task.project_id] = time.time()
                 elif outcome not in ("success", "cancelled") and task.task_type == "writeup":
                     self._writeup_retry_after[task.project_id] = time.time() + WRITEUP_RETRY_AFTER_SECONDS
                     LOG.info(
@@ -927,6 +942,9 @@ class DispatcherLoop:
         for project_id in list(self._writeup_retry_after):
             if project_id not in completed_ids:
                 self._writeup_retry_after.pop(project_id, None)
+        for project_id in list(self._writeup_verified_at):
+            if project_id not in completed_ids:
+                self._writeup_verified_at.pop(project_id, None)
 
     def _cancel_inactive_tasks(self, summaries: list[ProjectSummary]) -> None:
         status_by_project = {summary.id: summary.status for summary in summaries}

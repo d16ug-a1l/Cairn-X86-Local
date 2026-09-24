@@ -20,6 +20,7 @@ def _loop() -> DispatcherLoop:
     loop._inactive_cleanup_done = {}
     loop._writeup_done = set()
     loop._writeup_retry_after = {}
+    loop._writeup_verified_at = {}
     loop.worker_rejected_until = {}
     loop._log_state = {}
     loop.project_cursor = 0
@@ -340,6 +341,7 @@ def test_refresh_runtime_projects_drops_writeup_state_for_non_completed_projects
     loop = _loop()
     loop._writeup_done = {"done", "reopened"}
     loop._writeup_retry_after = {"done": 100.0, "reopened": 100.0}
+    loop._writeup_verified_at = {"done": 100.0, "reopened": 100.0}
 
     loop._refresh_runtime_projects(
         [
@@ -350,6 +352,7 @@ def test_refresh_runtime_projects_drops_writeup_state_for_non_completed_projects
 
     assert loop._writeup_done == {"done"}
     assert loop._writeup_retry_after == {"done": 100.0}
+    assert loop._writeup_verified_at == {"done": 100.0}
 
 
 def test_dispatch_writeups_submits_task_and_marks_done_on_success(monkeypatch) -> None:
@@ -488,3 +491,59 @@ def test_cleanup_completed_projects_proceeds_when_no_worker_supports_writeup() -
     loop._cleanup_completed_projects([_summary("proj_001", "completed")])
 
     assert len(submitted) == 1
+
+
+def test_dispatch_writeups_regenerates_when_stored_writeup_was_deleted(monkeypatch) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from cairn.dispatcher.protocol.client import ApiResult
+
+    loop = _writeup_capable_loop()
+    loop.executor = ThreadPoolExecutor(max_workers=1)
+    loop._writeup_done.add("proj_001")
+    loop._writeup_verified_at["proj_001"] = 0.0  # stale, forces re-verify
+    project = make_project()
+    project.project.status = "completed"
+    loop.backend = type("Backend", (), {"project_workspace": lambda _self, project_id: project_id})()
+    loop.client = type(
+        "Client",
+        (),
+        {
+            "get_writeup": lambda _self, _project_id: ApiResult(404, text="not found"),
+            "get_project": lambda _self, _project_id: project,
+        },
+    )()
+    monkeypatch.setattr("cairn.dispatcher.scheduler.loop.run_writeup_task", lambda *_a, **_k: "success")
+
+    loop._dispatch_writeups([_summary("proj_001", "completed")])
+
+    assert "proj_001" not in loop._writeup_done
+    assert len(loop.futures) == 1
+
+    for future in list(loop.futures):
+        future.result(timeout=5)
+    loop._reap_futures()
+
+    assert loop._writeup_done == {"proj_001"}
+    assert loop._writeup_verified_at["proj_001"] > 0.0
+    loop.executor.shutdown(wait=True)
+
+
+def test_dispatch_writeups_skips_recently_verified_project() -> None:
+    loop = _writeup_capable_loop()
+    loop._writeup_done.add("proj_001")
+    loop._writeup_verified_at["proj_001"] = 1e18  # fresh, within the verify interval
+    loop.client = type(
+        "Client",
+        (),
+        {
+            "get_writeup": lambda _self, _project_id: (_ for _ in ()).throw(
+                AssertionError("get_writeup should not be called")
+            )
+        },
+    )()
+
+    loop._dispatch_writeups([_summary("proj_001", "completed")])
+
+    assert loop.futures == {}
+    assert loop._writeup_done == {"proj_001"}
