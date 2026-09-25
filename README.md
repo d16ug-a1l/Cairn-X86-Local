@@ -36,6 +36,32 @@ Cairn is a general-purpose problem-solving engine. <br/>It defines no roles, no 
   </a>
 </p>
 
+## About This Fork
+
+This repository is a fork of **[oritera/Cairn](https://github.com/oritera/Cairn)**, a general-purpose problem-solving engine built on a Blackboard Architecture, first validated on AI penetration testing / CTF. All core architecture, the fact-intent graph protocol, and the original competition results described below belong to the upstream project.
+
+### Modifications in this fork
+
+- **Automatic writeup generation** — when a project is completed, the dispatcher schedules a `writeup` task: an LLM worker synthesizes the successful path (fact chain + commands/requests extracted from agent session transcripts) into a step-by-step reproduction writeup, stored on the server (`GET/PUT/DELETE /projects/{id}/writeup`). Deleted writeups are automatically regenerated.
+- **Report export** — the server renders the origin→goal exploitation chain with per-step execution details (`/projects/{id}/export?format=report`), alongside YAML and timeline exports.
+- **Web UI markdown rendering** — the report and writeup tabs in the export modal render as sanitized markdown (vendored marked + DOMPurify), with one-click writeup regeneration.
+- **Local-only execution** — the Docker/container execution mode was removed entirely. Workers always run as host subprocesses via `LocalBackend`, reusing the machine's logged-in `claude` / `codex` / `pi` CLIs. Startup checks probe the worker CLIs on `PATH`; the API-ping healthcheck machinery was dropped.
+
+### Running this fork
+
+Only local mode exists, so everything runs on one host:
+
+```bash
+uv sync --project cairn
+cp dispatch.local.example.yaml dispatch.yaml   # edit: workers, task_types (add writeup), timeouts
+uv run --project cairn cairn serve
+uv run --project cairn cairn dispatch --config dispatch.yaml
+# or manage both with the host-side script:
+./cairnctl.sh {start|stop|restart|status|logs}
+```
+
+The agents run with your user's permissions and no sandbox. For CTF pwn challenges, install a binary-exploitation toolchain on the host (e.g. `gdb` + `pwndbg`, `pwntools`, `checksec`, `ROPgadget`/`ropper`, `one_gadget`, `seccomp-tools`, `patchelf`); workers pick it up from `PATH` with no Cairn configuration changes.
+
 ## What is Cairn?
 
 Penetration testing is fundamentally a **directed search through a near-infinite state space**:
