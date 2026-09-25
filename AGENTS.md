@@ -12,7 +12,7 @@ Three graph primitives (the full protocol is specified in `docs/specs/server-pro
 
 Runtime architecture (four components, spec in `docs/specs/dispatcher-design.md`):
 
-1. **Cairn Server** (`cairn serve`) — FastAPI + SQLite protocol truth source. Maintains graph consistency only; does no reasoning. Serves a web UI (single `index.html` with vendored Cytoscape/Alpine/Tailwind) on port 8000 and persists to `~/.local/share/cairn/cairn.db`.
+1. **Cairn Server** (`cairn serve`) — FastAPI + SQLite protocol truth source. Maintains graph consistency only; does no reasoning. Serves a web UI (single `index.html` with vendored Cytoscape/Alpine/Tailwind/marked/DOMPurify) on port 8000 and persists to `~/.local/share/cairn/cairn.db`.
 2. **Dispatcher** (`cairn dispatch --config dispatch.yaml`) — the client executor and **sole protocol writer**. Reads the graph, schedules tasks, manages per-project workspaces and worker processes, writes results back. Agents never call the Cairn API directly; they only receive a rendered prompt and return structured JSON on stdout.
 3. **Project workspaces** — one working directory per project on the dispatcher host (`<workspace_root>/<project_id>/`), managed by the local backend; `local.completed_action` (`keep`/`remove`) controls whether it is deleted after completion.
 4. **Workers / Agent CLIs** — pluggable LLM CLI backends: `claudecode` (Claude Code), `codex`, `pi`, and `mock` (deterministic simulator for testing).
